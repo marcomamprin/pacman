@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini Maze Muncher</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>Mini Maze Muncher</h1>
+    <section class="hud" aria-label="Game status">
+      <div>Score: <strong id="score">0</strong></div>
+      <div>Lives: <strong id="lives">3</strong></div>
+      <div>Level: <strong id="level">1</strong></div>
+      <button id="restart" type="button">Restart</button>
+    </section>
+
+    <canvas id="game" width="672" height="744" aria-label="Mini Maze Muncher game board"></canvas>
+
+    <p class="help">
+      Move with arrow keys or WASD. Eat all pellets, avoid ghosts, and use power pellets to hunt them.
+      On touch screens, swipe on the board.
+    </p>
+  </main>
+
+  <script src="game.js?v=4"></script>
+</body>
+</html>
