@@ -155,14 +155,10 @@
     return Object.keys(DIRS).filter(d => canMove(entity, d));
   }
 
-  function choosePlayerDirection() {
-    if (canMove(player, player.nextDir)) return player.nextDir;
-    if (canMove(player, player.dir)) return player.dir;
-    const options = validDirs(player);
-    if (!options.length) return player.dir;
-    const nonReverse = options.filter(d => d !== REVERSE[player.dir]);
-    return nonReverse[0] || options[0];
-  }
+function choosePlayerDirection() {
+  if (canMove(player, player.nextDir)) return player.nextDir;
+  return player.dir;
+}
 
   function chooseGhostDirection(ghost) {
     let options = validDirs(ghost).filter(d => d !== REVERSE[ghost.dir]);
