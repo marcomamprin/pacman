@@ -12,6 +12,8 @@
   const ROWS = 31;
   const COLS = 28;
   const STEP_MS = 115;
+  const READY_SECONDS = 5;
+  const READY_TICKS = Math.ceil((READY_SECONDS * 1000) / STEP_MS);
 
   const MAZE_TEMPLATE = [
     "############################",
@@ -114,7 +116,7 @@
     lives = 3;
     level = 1;
     frightenedTicks = 0;
-    readyTicks = 10;
+    readyTicks = READY_TICKS;
     state = "playing";
     tickCounter = 0;
     parseMaze();
@@ -251,7 +253,7 @@
     updateHud();
     if (pelletsLeft <= 0) {
       level++;
-      readyTicks = 10;
+      readyTicks = READY_TICKS;
       parseMaze();
       updateHud();
     }
@@ -271,7 +273,7 @@
       g.dir = "left";
       g.eaten = false;
     });
-    readyTicks = 10;
+    readyTicks = READY_TICKS;
     frightenedTicks = 0;
   }
 
@@ -306,8 +308,8 @@
     tickCounter++;
 
     if (readyTicks > 0) {
-      readyTicks--;
       draw();
+      readyTicks--;
       return;
     }
 
@@ -340,6 +342,16 @@
    */
   function xy(c, r) {
     return { x: c * TILE + TILE / 2, y: r * TILE + TILE / 2 };
+  }
+
+  /**
+   * Converts the remaining ready ticks into a visible countdown number.
+   *
+   * @returns {number} Seconds left in the ready countdown.
+   */
+  function readyCountdownSeconds() {
+    if (readyTicks <= 0) return 0;
+    return Math.max(1, Math.ceil((readyTicks / READY_TICKS) * READY_SECONDS));
   }
 
   /**
@@ -449,7 +461,11 @@
     drawPlayer();
     ghosts.forEach(drawGhost);
     if (state === "gameover") drawOverlay("Game over", "Press Restart or Space");
-    else if (readyTicks > 0) drawOverlay("Ready!", "Starts automatically");
+    else if (readyTicks > 0) {
+      const seconds = readyCountdownSeconds();
+      const label = seconds === 1 ? "1 second" : `${seconds} seconds`;
+      drawOverlay("Ready!", `Starting in ${label}`);
+    }
   }
 
   /**
