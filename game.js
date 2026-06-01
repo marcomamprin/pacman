@@ -67,6 +67,9 @@
   let loopId = null;
   let tickCounter = 0;
 
+  /**
+   * Builds the playable grid from the maze template and places actors.
+   */
   function parseMaze() {
     grid = [];
     pelletsLeft = 0;
@@ -103,6 +106,9 @@
     }));
   }
 
+  /**
+   * Resets score, lives, level state, actors, and starts a fresh game loop.
+   */
   function resetGame() {
     score = 0;
     lives = 3;
@@ -117,24 +123,47 @@
     startLoop();
   }
 
+  /**
+   * Writes the current score, lives, and level values into the HUD.
+   */
   function updateHud() {
     scoreEl.textContent = score;
     livesEl.textContent = lives;
     levelEl.textContent = level;
   }
 
+  /**
+   * Checks whether a tile coordinate is blocked by a wall.
+   *
+   * @param {number} c Column index to test.
+   * @param {number} r Row index to test.
+   * @returns {boolean} True when the coordinate cannot be entered.
+   */
   function isWall(c, r) {
     if (r < 0 || r >= ROWS) return true;
     if (c < 0 || c >= COLS) return false;
     return grid[r][c] === "#";
   }
 
+  /**
+   * Wraps a column around the horizontal tunnel edges.
+   *
+   * @param {number} c Column index before wrapping.
+   * @returns {number} Column index inside the maze bounds.
+   */
   function wrappedC(c) {
     if (c < 0) return COLS - 1;
     if (c >= COLS) return 0;
     return c;
   }
 
+  /**
+   * Determines whether an entity can move one tile in a direction.
+   *
+   * @param {{c: number, r: number}} entity Entity with grid coordinates.
+   * @param {string} dirName Direction key from DIRS.
+   * @returns {boolean} True when the target tile is open.
+   */
   function canMove(entity, dirName) {
     const d = DIRS[dirName];
     const nr = entity.r + d.dr;
@@ -142,6 +171,13 @@
     return !isWall(nc, nr);
   }
 
+  /**
+   * Moves an entity by one tile if the requested direction is open.
+   *
+   * @param {{c: number, r: number, dir: string}} entity Entity to move.
+   * @param {string} dirName Direction key from DIRS.
+   * @returns {boolean} True when the entity moved.
+   */
   function moveOneTile(entity, dirName) {
     if (!canMove(entity, dirName)) return false;
     const d = DIRS[dirName];
@@ -151,15 +187,32 @@
     return true;
   }
 
+  /**
+   * Lists every direction an entity can currently move.
+   *
+   * @param {{c: number, r: number}} entity Entity with grid coordinates.
+   * @returns {string[]} Open direction keys.
+   */
   function validDirs(entity) {
     return Object.keys(DIRS).filter(d => canMove(entity, d));
   }
 
-function choosePlayerDirection() {
-  if (canMove(player, player.nextDir)) return player.nextDir;
-  return player.dir;
-}
+  /**
+   * Chooses the player's active direction from queued input.
+   *
+   * @returns {string} Direction the player should try this tick.
+   */
+  function choosePlayerDirection() {
+    if (canMove(player, player.nextDir)) return player.nextDir;
+    return player.dir;
+  }
 
+  /**
+   * Chooses a ghost direction, preferring pursuit unless frightened or wandering.
+   *
+   * @param {{c: number, r: number, dir: string, startC: number, startR: number, eaten: boolean}} ghost Ghost to steer.
+   * @returns {string} Direction the ghost should try this tick.
+   */
   function chooseGhostDirection(ghost) {
     let options = validDirs(ghost).filter(d => d !== REVERSE[ghost.dir]);
     if (!options.length) options = validDirs(ghost);
@@ -180,6 +233,9 @@ function choosePlayerDirection() {
     })[0];
   }
 
+  /**
+   * Consumes the pellet under the player and advances level state if needed.
+   */
   function eatPellet() {
     const ch = grid[player.r]?.[player.c];
     if (ch === ".") {
@@ -201,6 +257,9 @@ function choosePlayerDirection() {
     }
   }
 
+  /**
+   * Returns the player and ghosts to their starting tiles after a lost life.
+   */
   function resetPositionsAfterHit() {
     player.c = 13;
     player.r = 23;
@@ -216,6 +275,9 @@ function choosePlayerDirection() {
     frightenedTicks = 0;
   }
 
+  /**
+   * Resolves player and ghost collisions, including frightened ghost scoring.
+   */
   function handleCollisions() {
     for (const ghost of ghosts) {
       if (ghost.c === player.c && ghost.r === player.r && !ghost.eaten) {
@@ -236,6 +298,9 @@ function choosePlayerDirection() {
     }
   }
 
+  /**
+   * Advances the game by one timed step and redraws the board.
+   */
   function stepGame() {
     if (state !== "playing") return;
     tickCounter++;
@@ -266,10 +331,20 @@ function choosePlayerDirection() {
     draw();
   }
 
+  /**
+   * Converts grid coordinates into canvas center-point coordinates.
+   *
+   * @param {number} c Column index.
+   * @param {number} r Row index.
+   * @returns {{x: number, y: number}} Canvas pixel coordinates.
+   */
   function xy(c, r) {
     return { x: c * TILE + TILE / 2, y: r * TILE + TILE / 2 };
   }
 
+  /**
+   * Draws walls, pellets, and power pellets on the canvas.
+   */
   function drawMaze() {
     ctx.fillStyle = "#02030a";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -299,6 +374,9 @@ function choosePlayerDirection() {
     }
   }
 
+  /**
+   * Draws the player sprite using the current direction and mouth state.
+   */
   function drawPlayer() {
     const p = xy(player.c, player.r);
     const angle = { right: 0, down: Math.PI / 2, left: Math.PI, up: Math.PI * 1.5 }[player.dir] || 0;
@@ -311,6 +389,11 @@ function choosePlayerDirection() {
     ctx.fill();
   }
 
+  /**
+   * Draws one ghost with normal, frightened, or eaten styling.
+   *
+   * @param {{c: number, r: number, color: string, eaten: boolean}} ghost Ghost to draw.
+   */
   function drawGhost(ghost) {
     const p = xy(ghost.c, ghost.r);
     const frightened = frightenedTicks > 0 && !ghost.eaten;
@@ -336,6 +419,12 @@ function choosePlayerDirection() {
     ctx.fill();
   }
 
+  /**
+   * Draws a centered status overlay above the game board.
+   *
+   * @param {string} text Main overlay message.
+   * @param {string} [subtext=""] Optional secondary message.
+   */
   function drawOverlay(text, subtext = "") {
     ctx.save();
     ctx.fillStyle = "rgba(0, 0, 0, 0.68)";
@@ -352,6 +441,9 @@ function choosePlayerDirection() {
     ctx.restore();
   }
 
+  /**
+   * Redraws the complete current game frame.
+   */
   function draw() {
     drawMaze();
     drawPlayer();
@@ -360,6 +452,9 @@ function choosePlayerDirection() {
     else if (readyTicks > 0) drawOverlay("Ready!", "Starts automatically");
   }
 
+  /**
+   * Starts or restarts the fixed-interval game loop.
+   */
   function startLoop() {
     if (loopId) clearInterval(loopId);
     loopId = setInterval(stepGame, STEP_MS);
