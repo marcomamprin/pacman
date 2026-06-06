@@ -23,6 +23,10 @@
   const BEHAVIOR_CLUSTER_RATE = 0.18;
   const BEHAVIOR_CLUSTER_DECAY = 0.992;
   const BEHAVIOR_CLUSTER_THRESHOLD = 1.1;
+  const NN_INPUTS = 22;
+  const NN_HIDDEN = 14;
+  const NN_OUTPUTS = 4;
+  const NN_LEARNING_RATE = 0.045;
   const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
   const LEARNING_SAVE_INTERVAL = 10;
   const BASE_FRIGHTENED_TICKS = 70;
@@ -81,7 +85,7 @@
   };
 
   let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks, survivalTicks;
-  let playerTrail, learnedTurns, behaviorClusters;
+  let playerTrail, learnedTurns, behaviorClusters, neuralNetwork;
   let learnedMovesSinceSave = 0;
   let loopId = null;
   let tickCounter = 0;
@@ -227,6 +231,7 @@
     playerTrail = [];
     learnedTurns = new Map();
     behaviorClusters = [];
+    neuralNetwork = createNeuralNetwork();
     learnedMovesSinceSave = 0;
   }
 
@@ -264,6 +269,7 @@
           weight: Number(cluster.weight) || 1,
           samples: Number(cluster.samples) || 1
         }));
+      neuralNetwork = restoreNeuralNetwork(stored.neuralNetwork);
     } catch {
       resetLearning();
     }
@@ -278,7 +284,8 @@
     try {
       localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify({
         learnedTurns: [...learnedTurns.entries()],
-        behaviorClusters
+        behaviorClusters,
+        neuralNetwork
       }));
       learnedMovesSinceSave = 0;
     } catch {
@@ -325,6 +332,7 @@
     counts[player.dir]++;
     learnedTurns.set(key, counts);
     learnBehaviorCluster(behaviorVector, player.dir);
+    trainNeuralNetwork(behaviorVector, player.dir);
     learnedMovesSinceSave++;
     if (learnedMovesSinceSave >= LEARNING_SAVE_INTERVAL) saveLearning();
   }
@@ -406,6 +414,132 @@
       ...recentDirectionVector(1),
       ...recentDirectionVector(2)
     ];
+  }
+
+  /**
+   * Creates a small feed-forward neural network for next-direction prediction.
+   *
+   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number}} Neural network state.
+   */
+  function createNeuralNetwork() {
+    return {
+      inputWeights: Array.from({ length: NN_HIDDEN }, () => (
+        Array.from({ length: NN_INPUTS }, () => (Math.random() * 2 - 1) * 0.35)
+      )),
+      hiddenBiases: Array.from({ length: NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.1),
+      outputWeights: Array.from({ length: NN_OUTPUTS }, () => (
+        Array.from({ length: NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.35)
+      )),
+      outputBiases: Array.from({ length: NN_OUTPUTS }, () => 0),
+      samples: 0
+    };
+  }
+
+  /**
+   * Reads a finite numeric value with a fallback.
+   *
+   * @param {unknown} value Value to read.
+   * @param {number} fallback Fallback when the value is not finite.
+   * @returns {number} Finite number.
+   */
+  function finiteNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  /**
+   * Restores a neural network from persisted data, filling bad values safely.
+   *
+   * @param {object} stored Persisted neural-network state.
+   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number}} Restored network.
+   */
+  function restoreNeuralNetwork(stored) {
+    const network = createNeuralNetwork();
+    if (!stored) return network;
+
+    network.inputWeights = network.inputWeights.map((row, h) => (
+      row.map((value, i) => finiteNumber(stored.inputWeights?.[h]?.[i], value))
+    ));
+    network.hiddenBiases = network.hiddenBiases.map((value, h) => finiteNumber(stored.hiddenBiases?.[h], value));
+    network.outputWeights = network.outputWeights.map((row, o) => (
+      row.map((value, h) => finiteNumber(stored.outputWeights?.[o]?.[h], value))
+    ));
+    network.outputBiases = network.outputBiases.map((value, o) => finiteNumber(stored.outputBiases?.[o], value));
+    network.samples = Math.max(0, Number(stored.samples) || 0);
+    return network;
+  }
+
+  /**
+   * Pads or trims a feature vector for the neural network.
+   *
+   * @param {number[]} vector Source feature vector.
+   * @returns {number[]} Fixed-size neural-network input.
+   */
+  function neuralInputVector(vector) {
+    return Array.from({ length: NN_INPUTS }, (_, i) => Number(vector[i]) || 0);
+  }
+
+  /**
+   * Converts raw neural output scores to probabilities.
+   *
+   * @param {number[]} scores Raw output scores.
+   * @returns {number[]} Probability distribution.
+   */
+  function softmax(scores) {
+    const maxScore = Math.max(...scores);
+    const exps = scores.map(score => Math.exp(score - maxScore));
+    const total = exps.reduce((sum, value) => sum + value, 0);
+    return exps.map(value => value / total);
+  }
+
+  /**
+   * Runs a forward pass through the neural network.
+   *
+   * @param {number[]} vector Movement-context features.
+   * @returns {{input: number[], hidden: number[], probabilities: number[]} | null} Forward pass output.
+   */
+  function neuralForward(vector) {
+    if (!neuralNetwork) return null;
+
+    const input = neuralInputVector(vector);
+    const hidden = neuralNetwork.inputWeights.map((weights, h) => {
+      const sum = weights.reduce((total, weight, i) => total + weight * input[i], neuralNetwork.hiddenBiases[h]);
+      return Math.tanh(sum);
+    });
+    const scores = neuralNetwork.outputWeights.map((weights, o) => (
+      weights.reduce((total, weight, h) => total + weight * hidden[h], neuralNetwork.outputBiases[o])
+    ));
+
+    return { input, hidden, probabilities: softmax(scores) };
+  }
+
+  /**
+   * Trains the neural network from one observed player movement.
+   *
+   * @param {number[]} vector Movement-context features before the move.
+   * @param {string} outcomeDir Direction Pac-Man actually chose.
+   */
+  function trainNeuralNetwork(vector, outcomeDir) {
+    const targetIndex = DIR_NAMES.indexOf(outcomeDir);
+    const pass = neuralForward(vector);
+    if (!pass || targetIndex < 0) return;
+
+    const rate = NN_LEARNING_RATE / Math.sqrt(1 + neuralNetwork.samples / 120);
+    const outputErrors = pass.probabilities.map((probability, i) => probability - (i === targetIndex ? 1 : 0));
+    const previousOutputWeights = neuralNetwork.outputWeights.map(row => [...row]);
+
+    neuralNetwork.outputWeights = neuralNetwork.outputWeights.map((weights, o) => (
+      weights.map((weight, h) => weight - rate * outputErrors[o] * pass.hidden[h])
+    ));
+    neuralNetwork.outputBiases = neuralNetwork.outputBiases.map((bias, o) => bias - rate * outputErrors[o]);
+
+    neuralNetwork.inputWeights = neuralNetwork.inputWeights.map((weights, h) => {
+      const hiddenError = (1 - pass.hidden[h] ** 2)
+        * outputErrors.reduce((sum, error, o) => sum + previousOutputWeights[o][h] * error, 0);
+      neuralNetwork.hiddenBiases[h] -= rate * hiddenError;
+      return weights.map((weight, i) => weight - rate * hiddenError * pass.input[i]);
+    });
+    neuralNetwork.samples++;
   }
 
   /**
@@ -612,6 +746,16 @@
   }
 
   /**
+   * Scales neural prediction influence as training examples accumulate.
+   *
+   * @returns {number} Neural prediction weight.
+   */
+  function neuralPredictionWeight() {
+    const trainingConfidence = Math.min(1.4, (neuralNetwork?.samples || 0) / 80);
+    return 0.75 + difficultyPressure() * 0.1 + trainingConfidence;
+  }
+
+  /**
    * Projects a tile forward through open corridor spaces.
    *
    * @param {{c: number, r: number}} origin Starting tile.
@@ -651,7 +795,29 @@
   }
 
   /**
-   * Combines exact movement memory and behavior clusters into direction weights.
+   * Uses the neural network to score likely player directions.
+   *
+   * @param {{c: number, r: number}} tile Tile being predicted from.
+   * @param {string} incomingDir Direction entering the tile.
+   * @returns {{left: number, right: number, up: number, down: number} | null} Neural-network direction weights.
+   */
+  function neuralTurnWeights(tile, incomingDir) {
+    if (!neuralNetwork || neuralNetwork.samples < 4) return null;
+
+    const vector = playerContextVector({ c: tile.c, r: tile.r, dir: incomingDir }, incomingDir);
+    const prediction = neuralForward(vector);
+    if (!prediction) return null;
+
+    const sampleConfidence = Math.min(1, (neuralNetwork.samples - 3) / 30);
+    const weights = { left: 0, right: 0, up: 0, down: 0 };
+    DIR_NAMES.forEach((dirName, i) => {
+      weights[dirName] = prediction.probabilities[i] * sampleConfidence;
+    });
+    return weights;
+  }
+
+  /**
+   * Combines exact memory, behavior clusters, and neural predictions into direction weights.
    *
    * @param {{c: number, r: number}} tile Tile being predicted from.
    * @param {string} incomingDir Direction entering the tile.
@@ -670,6 +836,13 @@
     if (clusterWeights) {
       DIR_NAMES.forEach(dirName => {
         weights[dirName] += clusterWeights[dirName] * clusterPredictionWeight();
+      });
+    }
+
+    const neuralWeights = neuralTurnWeights(tile, incomingDir);
+    if (neuralWeights) {
+      DIR_NAMES.forEach(dirName => {
+        weights[dirName] += neuralWeights[dirName] * neuralPredictionWeight();
       });
     }
 
@@ -693,7 +866,7 @@
   }
 
   /**
-   * Picks the player's most likely turn from exact memory and learned clusters.
+   * Picks the player's most likely turn from the hybrid learned model.
    *
    * @param {{c: number, r: number}} tile Tile being predicted from.
    * @param {string} incomingDir Direction entering the tile.
