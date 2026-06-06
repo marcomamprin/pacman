@@ -11,6 +11,7 @@
   const aiHorizonEl = document.getElementById("ai-horizon");
   const aiMemoryEl = document.getElementById("ai-memory");
   const aiNnSamplesEl = document.getElementById("ai-nn-samples");
+  const aiNnLossEl = document.getElementById("ai-nn-loss");
   const classicAiBtn = document.getElementById("classic-ai");
   const allAiBtn = document.getElementById("all-ai");
   const resetAiMemoryBtn = document.getElementById("reset-ai-memory");
@@ -35,6 +36,8 @@
   const NN_HIDDEN = 14;
   const NN_OUTPUTS = 4;
   const NN_LEARNING_RATE = 0.045;
+  const NN_LOG_INTERVAL = 25;
+  const NN_METRIC_DECAY = 0.94;
   const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
   const AI_SETTINGS_STORAGE_KEY = "mini-maze-muncher.ai-settings.v1";
   const LEARNING_SAVE_INTERVAL = 10;
@@ -97,6 +100,7 @@
     patternMemory: true,
     behaviorClusters: true,
     neuralNetwork: true,
+    nnLogs: true,
     persistentMemory: true,
     adaptiveDifficulty: true,
     groupTactics: true,
@@ -110,6 +114,7 @@
   let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks, survivalTicks;
   let playerTrail, learnedTurns, behaviorClusters, neuralNetwork;
   let aiSettings = { ...DEFAULT_AI_SETTINGS };
+  let neuralLogWindow = { loss: 0, correct: 0, confidence: 0, count: 0 };
   let learnedMovesSinceSave = 0;
   let loopId = null;
   let tickCounter = 0;
@@ -191,6 +196,7 @@
     if (aiHorizonEl) aiHorizonEl.textContent = playerTrail ? predictionHorizon() : PATTERN_PREDICTION_STEPS;
     if (aiMemoryEl) aiMemoryEl.textContent = `${learnedTurns?.size || 0}/${behaviorClusters?.length || 0}`;
     if (aiNnSamplesEl) aiNnSamplesEl.textContent = neuralNetwork?.samples || 0;
+    if (aiNnLossEl) aiNnLossEl.textContent = neuralNetwork?.rollingLoss != null ? neuralNetwork.rollingLoss.toFixed(3) : "-";
   }
 
   /**
@@ -353,6 +359,7 @@
     learnedTurns = new Map();
     behaviorClusters = [];
     neuralNetwork = createNeuralNetwork();
+    neuralLogWindow = { loss: 0, correct: 0, confidence: 0, count: 0 };
     learnedMovesSinceSave = 0;
   }
 
@@ -567,7 +574,10 @@
         Array.from({ length: NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.35)
       )),
       outputBiases: Array.from({ length: NN_OUTPUTS }, () => 0),
-      samples: 0
+      samples: 0,
+      rollingAccuracy: 0,
+      rollingConfidence: 0,
+      rollingLoss: null
     };
   }
 
@@ -602,6 +612,9 @@
     ));
     network.outputBiases = network.outputBiases.map((value, o) => finiteNumber(stored.outputBiases?.[o], value));
     network.samples = Math.max(0, Number(stored.samples) || 0);
+    network.rollingAccuracy = finiteNumber(stored.rollingAccuracy, 0);
+    network.rollingConfidence = finiteNumber(stored.rollingConfidence, 0);
+    network.rollingLoss = stored.rollingLoss === null ? null : finiteNumber(stored.rollingLoss, null);
     return network;
   }
 
@@ -650,6 +663,79 @@
   }
 
   /**
+   * Finds the most likely output index from a probability distribution.
+   *
+   * @param {number[]} probabilities Direction probabilities.
+   * @returns {number} Index of the highest probability.
+   */
+  function predictedDirectionIndex(probabilities) {
+    return probabilities.reduce((best, probability, i) => (
+      probability > probabilities[best] ? i : best
+    ), 0);
+  }
+
+  /**
+   * Converts probabilities into a compact direction-keyed log object.
+   *
+   * @param {number[]} probabilities Direction probabilities.
+   * @returns {{left: number, right: number, up: number, down: number}} Rounded probabilities.
+   */
+  function probabilityLog(probabilities) {
+    return Object.fromEntries(DIR_NAMES.map((dirName, i) => [
+      dirName,
+      Number((probabilities[i] || 0).toFixed(3))
+    ]));
+  }
+
+  /**
+   * Records neural-network training metrics and emits periodic console logs.
+   *
+   * @param {object} metrics Latest training metrics.
+   */
+  function recordNeuralTrainingMetrics(metrics) {
+    const { beforeProbabilities, afterProbabilities, targetIndex, rate, loss } = metrics;
+    const predictedIndex = predictedDirectionIndex(beforeProbabilities);
+    const confidence = beforeProbabilities[predictedIndex] || 0;
+    const correct = predictedIndex === targetIndex ? 1 : 0;
+    const decay = neuralNetwork.samples <= 1 ? 0 : NN_METRIC_DECAY;
+
+    neuralNetwork.rollingLoss = neuralNetwork.rollingLoss === null
+      ? loss
+      : neuralNetwork.rollingLoss * decay + loss * (1 - decay);
+    neuralNetwork.rollingAccuracy = neuralNetwork.rollingAccuracy * decay + correct * (1 - decay);
+    neuralNetwork.rollingConfidence = neuralNetwork.rollingConfidence * decay + confidence * (1 - decay);
+
+    neuralLogWindow.loss += loss;
+    neuralLogWindow.correct += correct;
+    neuralLogWindow.confidence += confidence;
+    neuralLogWindow.count++;
+
+    if (!aiEnabled("nnLogs") || neuralLogWindow.count < NN_LOG_INTERVAL) return;
+
+    const averageLoss = neuralLogWindow.loss / neuralLogWindow.count;
+    const averageAccuracy = neuralLogWindow.correct / neuralLogWindow.count;
+    const averageConfidence = neuralLogWindow.confidence / neuralLogWindow.count;
+    console.info("[Pac-Man NN]", {
+      samples: neuralNetwork.samples,
+      window: neuralLogWindow.count,
+      averageLoss: Number(averageLoss.toFixed(4)),
+      rollingLoss: Number(neuralNetwork.rollingLoss.toFixed(4)),
+      averageAccuracy: Number(averageAccuracy.toFixed(3)),
+      rollingAccuracy: Number(neuralNetwork.rollingAccuracy.toFixed(3)),
+      averageConfidence: Number(averageConfidence.toFixed(3)),
+      rollingConfidence: Number(neuralNetwork.rollingConfidence.toFixed(3)),
+      learningRate: Number(rate.toFixed(5)),
+      target: DIR_NAMES[targetIndex],
+      predicted: DIR_NAMES[predictedIndex],
+      before: probabilityLog(beforeProbabilities),
+      after: probabilityLog(afterProbabilities),
+      pressure: difficultyPressure(),
+      horizon: predictionHorizon()
+    });
+    neuralLogWindow = { loss: 0, correct: 0, confidence: 0, count: 0 };
+  }
+
+  /**
    * Trains the neural network from one observed player movement.
    *
    * @param {number[]} vector Movement-context features before the move.
@@ -661,6 +747,8 @@
     if (!pass || targetIndex < 0) return;
 
     const rate = NN_LEARNING_RATE / Math.sqrt(1 + neuralNetwork.samples / 120);
+    const beforeProbabilities = [...pass.probabilities];
+    const loss = -Math.log(Math.max(1e-6, beforeProbabilities[targetIndex] || 0));
     const outputErrors = pass.probabilities.map((probability, i) => probability - (i === targetIndex ? 1 : 0));
     const previousOutputWeights = neuralNetwork.outputWeights.map(row => [...row]);
 
@@ -676,6 +764,13 @@
       return weights.map((weight, i) => weight - rate * hiddenError * pass.input[i]);
     });
     neuralNetwork.samples++;
+    recordNeuralTrainingMetrics({
+      beforeProbabilities,
+      afterProbabilities: neuralForward(vector)?.probabilities || beforeProbabilities,
+      targetIndex,
+      rate,
+      loss
+    });
   }
 
   /**
