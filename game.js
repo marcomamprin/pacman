@@ -7,6 +7,14 @@
   const livesEl = document.getElementById("lives");
   const levelEl = document.getElementById("level");
   const restartBtn = document.getElementById("restart");
+  const aiPressureEl = document.getElementById("ai-pressure");
+  const aiHorizonEl = document.getElementById("ai-horizon");
+  const aiMemoryEl = document.getElementById("ai-memory");
+  const aiNnSamplesEl = document.getElementById("ai-nn-samples");
+  const classicAiBtn = document.getElementById("classic-ai");
+  const allAiBtn = document.getElementById("all-ai");
+  const resetAiMemoryBtn = document.getElementById("reset-ai-memory");
+  const aiToggleBtns = [...document.querySelectorAll("[data-ai-toggle]")];
 
   const TILE = 24;
   const ROWS = 31;
@@ -28,6 +36,7 @@
   const NN_OUTPUTS = 4;
   const NN_LEARNING_RATE = 0.045;
   const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
+  const AI_SETTINGS_STORAGE_KEY = "mini-maze-muncher.ai-settings.v1";
   const LEARNING_SAVE_INTERVAL = 10;
   const BASE_FRIGHTENED_TICKS = 70;
   const MIN_FRIGHTENED_TICKS = 18;
@@ -84,11 +93,118 @@
     ArrowDown: "down", KeyS: "down"
   };
 
+  const DEFAULT_AI_SETTINGS = {
+    patternMemory: true,
+    behaviorClusters: true,
+    neuralNetwork: true,
+    persistentMemory: true,
+    adaptiveDifficulty: true,
+    groupTactics: true,
+    powerPelletNerf: true,
+    antiLoopTraps: true,
+    tunnelTraps: true,
+    speedBursts: true,
+    levelScaling: true
+  };
+
   let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks, survivalTicks;
   let playerTrail, learnedTurns, behaviorClusters, neuralNetwork;
+  let aiSettings = { ...DEFAULT_AI_SETTINGS };
   let learnedMovesSinceSave = 0;
   let loopId = null;
   let tickCounter = 0;
+
+  /**
+   * Checks whether an AI feature is enabled.
+   *
+   * @param {string} name Feature key.
+   * @returns {boolean} True when the feature is active.
+   */
+  function aiEnabled(name) {
+    return aiSettings[name] !== false;
+  }
+
+  /**
+   * Loads saved AI toggle settings from browser storage.
+   */
+  function loadAiSettings() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(AI_SETTINGS_STORAGE_KEY) || "{}");
+      aiSettings = { ...DEFAULT_AI_SETTINGS, ...stored };
+    } catch {
+      aiSettings = { ...DEFAULT_AI_SETTINGS };
+    }
+  }
+
+  /**
+   * Saves AI toggle settings into browser storage.
+   */
+  function saveAiSettings() {
+    try {
+      localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(aiSettings));
+    } catch {
+      // Settings persistence is optional.
+    }
+  }
+
+  /**
+   * Applies one AI setting and updates the controls.
+   *
+   * @param {string} name Feature key.
+   * @param {boolean} value New enabled state.
+   */
+  function setAiSetting(name, value) {
+    aiSettings[name] = value;
+    saveAiSettings();
+    updateAiControls();
+    draw();
+  }
+
+  /**
+   * Applies a full AI preset.
+   *
+   * @param {boolean} value Enabled state for every AI feature.
+   */
+  function setAllAiSettings(value) {
+    aiSettings = Object.fromEntries(Object.keys(DEFAULT_AI_SETTINGS).map(name => [name, value]));
+    saveAiSettings();
+    updateAiControls();
+    draw();
+  }
+
+  /**
+   * Updates toggle pressed states to match the current AI settings.
+   */
+  function updateAiControls() {
+    aiToggleBtns.forEach(button => {
+      const name = button.dataset.aiToggle;
+      button.setAttribute("aria-pressed", String(aiEnabled(name)));
+    });
+    updateAiStats();
+  }
+
+  /**
+   * Updates the visible AI difficulty and learning metrics.
+   */
+  function updateAiStats() {
+    if (aiPressureEl) aiPressureEl.textContent = playerTrail ? difficultyPressure() : 0;
+    if (aiHorizonEl) aiHorizonEl.textContent = playerTrail ? predictionHorizon() : PATTERN_PREDICTION_STEPS;
+    if (aiMemoryEl) aiMemoryEl.textContent = `${learnedTurns?.size || 0}/${behaviorClusters?.length || 0}`;
+    if (aiNnSamplesEl) aiNnSamplesEl.textContent = neuralNetwork?.samples || 0;
+  }
+
+  /**
+   * Clears persistent and in-memory ghost learning.
+   */
+  function clearAiMemory() {
+    try {
+      localStorage.removeItem(LEARNING_STORAGE_KEY);
+    } catch {
+      // Memory clearing still works in RAM when storage is unavailable.
+    }
+    resetLearning();
+    updateAiStats();
+  }
 
   /**
    * Builds the playable grid from the maze template and places actors.
@@ -142,8 +258,12 @@
     state = "playing";
     tickCounter = 0;
     survivalTicks = 0;
-    if (learnedTurns && behaviorClusters) saveLearning();
-    loadLearning();
+    if (aiEnabled("persistentMemory")) {
+      if (learnedTurns && behaviorClusters) saveLearning();
+      loadLearning();
+    } else {
+      resetLearning();
+    }
     parseMaze();
     updateHud();
     draw();
@@ -157,6 +277,7 @@
     scoreEl.textContent = score;
     livesEl.textContent = lives;
     levelEl.textContent = level;
+    updateAiStats();
   }
 
   /**
@@ -279,7 +400,7 @@
    * Saves persistent ghost learning into browser storage.
    */
   function saveLearning() {
-    if (!learnedTurns || !behaviorClusters) return;
+    if (!learnedTurns || !behaviorClusters || !aiEnabled("persistentMemory")) return;
 
     try {
       localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify({
@@ -320,21 +441,36 @@
    * @param {{c: number, r: number, dir: string}} previousPlayer Player state before moving.
    */
   function learnPlayerMove(previousPlayer) {
-    decayLearnedTurns();
-    decayBehaviorClusters();
     const behaviorVector = playerContextVector(previousPlayer, player.nextDir);
+    let trained = false;
 
     playerTrail.push({ c: player.c, r: player.r, dir: player.dir });
     if (playerTrail.length > PLAYER_MEMORY_LIMIT) playerTrail.shift();
 
-    const key = turnKey(previousPlayer, previousPlayer.dir);
-    const counts = learnedTurns.get(key) || { left: 0, right: 0, up: 0, down: 0 };
-    counts[player.dir]++;
-    learnedTurns.set(key, counts);
-    learnBehaviorCluster(behaviorVector, player.dir);
-    trainNeuralNetwork(behaviorVector, player.dir);
-    learnedMovesSinceSave++;
-    if (learnedMovesSinceSave >= LEARNING_SAVE_INTERVAL) saveLearning();
+    if (aiEnabled("patternMemory")) {
+      decayLearnedTurns();
+      const key = turnKey(previousPlayer, previousPlayer.dir);
+      const counts = learnedTurns.get(key) || { left: 0, right: 0, up: 0, down: 0 };
+      counts[player.dir]++;
+      learnedTurns.set(key, counts);
+      trained = true;
+    }
+
+    if (aiEnabled("behaviorClusters")) {
+      decayBehaviorClusters();
+      learnBehaviorCluster(behaviorVector, player.dir);
+      trained = true;
+    }
+
+    if (aiEnabled("neuralNetwork")) {
+      trainNeuralNetwork(behaviorVector, player.dir);
+      trained = true;
+    }
+
+    if (trained) {
+      learnedMovesSinceSave++;
+      if (learnedMovesSinceSave >= LEARNING_SAVE_INTERVAL) saveLearning();
+    }
   }
 
   /**
@@ -712,9 +848,9 @@
    * @returns {number} Adaptive pressure score.
    */
   function difficultyPressure() {
-    const levelPressure = Math.max(0, level - 1);
-    const survivalPressure = Math.floor(survivalTicks / 90);
-    const learningPressure = Math.floor(playerTrail.length / 45);
+    const levelPressure = aiEnabled("levelScaling") ? Math.max(0, level - 1) : 0;
+    const survivalPressure = aiEnabled("adaptiveDifficulty") ? Math.floor(survivalTicks / 90) : 0;
+    const learningPressure = aiEnabled("adaptiveDifficulty") ? Math.floor(playerTrail.length / 45) : 0;
     return Math.min(10, levelPressure + survivalPressure + learningPressure);
   }
 
@@ -733,7 +869,9 @@
    * @returns {number} Frightened mode duration in ticks.
    */
   function frightenedDuration() {
-    return Math.max(MIN_FRIGHTENED_TICKS, BASE_FRIGHTENED_TICKS - difficultyPressure() * 5 - Math.max(0, level - 1) * 4);
+    if (!aiEnabled("powerPelletNerf")) return BASE_FRIGHTENED_TICKS;
+    const levelNerf = aiEnabled("levelScaling") ? Math.max(0, level - 1) * 4 : 0;
+    return Math.max(MIN_FRIGHTENED_TICKS, BASE_FRIGHTENED_TICKS - difficultyPressure() * 5 - levelNerf);
   }
 
   /**
@@ -781,6 +919,8 @@
    * @returns {{left: number, right: number, up: number, down: number} | null} Cluster-derived direction weights.
    */
   function clusteredTurnWeights(tile, incomingDir) {
+    if (!aiEnabled("behaviorClusters")) return null;
+
     const vector = playerContextVector({ c: tile.c, r: tile.r, dir: incomingDir }, incomingDir);
     const match = nearestBehaviorCluster(vector);
     const maxDistance = BEHAVIOR_CLUSTER_THRESHOLD * 1.75;
@@ -802,7 +942,7 @@
    * @returns {{left: number, right: number, up: number, down: number} | null} Neural-network direction weights.
    */
   function neuralTurnWeights(tile, incomingDir) {
-    if (!neuralNetwork || neuralNetwork.samples < 4) return null;
+    if (!aiEnabled("neuralNetwork") || !neuralNetwork || neuralNetwork.samples < 4) return null;
 
     const vector = playerContextVector({ c: tile.c, r: tile.r, dir: incomingDir }, incomingDir);
     const prediction = neuralForward(vector);
@@ -825,7 +965,7 @@
    */
   function learnedTurnWeights(tile, incomingDir) {
     const weights = { left: 0, right: 0, up: 0, down: 0 };
-    const counts = learnedTurns.get(turnKey(tile, incomingDir));
+    const counts = aiEnabled("patternMemory") ? learnedTurns.get(turnKey(tile, incomingDir)) : null;
     if (counts) {
       DIR_NAMES.forEach(dirName => {
         weights[dirName] += counts[dirName];
@@ -1001,6 +1141,8 @@
    * @returns {string} Tactical role name.
    */
   function ghostTactic(ghost) {
+    if (!aiEnabled("groupTactics")) return "chaser";
+
     const hunters = ghosts
       .filter(g => !g.eaten)
       .sort((a, b) => routeDistance(a, player) - routeDistance(b, player));
@@ -1040,10 +1182,10 @@
       return projectTile(nearPrediction, sideDir, 5 + Math.floor(difficultyPressure() / 3));
     }
 
-    const loopTarget = loopTrapTarget();
+    const loopTarget = aiEnabled("antiLoopTraps") ? loopTrapTarget() : null;
     if (loopTarget) return loopTarget;
 
-    const tunnelTarget = tunnelTrapTarget();
+    const tunnelTarget = aiEnabled("tunnelTraps") ? tunnelTrapTarget() : null;
     if (tunnelTarget) return tunnelTarget;
 
     return projectTile(farPrediction, REVERSE[farPrediction.dir || travelDir], 4 + Math.floor(difficultyPressure() / 2));
@@ -1138,7 +1280,7 @@
 
     const target = ghost.eaten
       ? { c: ghost.startC, r: ghost.startR }
-      : coordinatedGhostTarget(ghost);
+      : (aiEnabled("groupTactics") ? coordinatedGhostTarget(ghost) : player);
     return shortestPathDirection(ghost, target);
   }
 
@@ -1164,6 +1306,8 @@
     const pressure = difficultyPressure();
     const confidence = learnedTurnConfidence(player, playerTravelDirection());
     let passes = 1;
+    if (!aiEnabled("speedBursts")) return passes;
+
     if (pressure >= 2 && confidence >= 0.55 && tickCounter % Math.max(3, 9 - pressure) === 0) passes++;
     if (pressure >= 7 && tickCounter % 5 === 0) passes++;
     return Math.min(3, passes);
@@ -1404,6 +1548,7 @@
    * Redraws the complete current game frame.
    */
   function draw() {
+    updateAiStats();
     drawMaze();
     drawPlayer();
     ghosts.forEach(drawGhost);
@@ -1452,6 +1597,18 @@
     touchStart = null;
   });
 
+  aiToggleBtns.forEach(button => {
+    button.addEventListener("click", () => {
+      const name = button.dataset.aiToggle;
+      setAiSetting(name, !aiEnabled(name));
+    });
+  });
+  classicAiBtn?.addEventListener("click", () => setAllAiSettings(false));
+  allAiBtn?.addEventListener("click", () => setAllAiSettings(true));
+  resetAiMemoryBtn?.addEventListener("click", () => {
+    clearAiMemory();
+    draw();
+  });
   restartBtn.addEventListener("click", resetGame);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
@@ -1463,5 +1620,7 @@
   });
   window.addEventListener("beforeunload", saveLearning);
 
+  loadAiSettings();
+  updateAiControls();
   resetGame();
 })();

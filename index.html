@@ -16,6 +16,38 @@
       <button id="restart" type="button">Restart</button>
     </section>
 
+    <section class="ai-lab" aria-label="AI difficulty controls">
+      <div class="ai-lab__bar">
+        <h2>AI Lab</h2>
+        <div class="ai-actions">
+          <button id="classic-ai" class="secondary" type="button">Classic</button>
+          <button id="all-ai" class="secondary" type="button">All On</button>
+          <button id="reset-ai-memory" class="secondary danger" type="button">Reset Memory</button>
+        </div>
+      </div>
+
+      <div class="ai-toggles" aria-label="AI feature toggles">
+        <button type="button" class="toggle" data-ai-toggle="patternMemory" aria-pressed="true">Pattern Memory</button>
+        <button type="button" class="toggle" data-ai-toggle="behaviorClusters" aria-pressed="true">Clusters</button>
+        <button type="button" class="toggle" data-ai-toggle="neuralNetwork" aria-pressed="true">Neural Net</button>
+        <button type="button" class="toggle" data-ai-toggle="persistentMemory" aria-pressed="true">Persistent Memory</button>
+        <button type="button" class="toggle" data-ai-toggle="adaptiveDifficulty" aria-pressed="true">Adaptive Pressure</button>
+        <button type="button" class="toggle" data-ai-toggle="groupTactics" aria-pressed="true">Group Tactics</button>
+        <button type="button" class="toggle" data-ai-toggle="powerPelletNerf" aria-pressed="true">Pellet Nerf</button>
+        <button type="button" class="toggle" data-ai-toggle="antiLoopTraps" aria-pressed="true">Anti-loop</button>
+        <button type="button" class="toggle" data-ai-toggle="tunnelTraps" aria-pressed="true">Tunnel Traps</button>
+        <button type="button" class="toggle" data-ai-toggle="speedBursts" aria-pressed="true">Speed Bursts</button>
+        <button type="button" class="toggle" data-ai-toggle="levelScaling" aria-pressed="true">Level Scaling</button>
+      </div>
+
+      <div class="ai-stats" aria-label="AI learning status">
+        <div>Pressure <strong id="ai-pressure">0</strong></div>
+        <div>Horizon <strong id="ai-horizon">8</strong></div>
+        <div>Memory <strong id="ai-memory">0</strong></div>
+        <div>NN Samples <strong id="ai-nn-samples">0</strong></div>
+      </div>
+    </section>
+
     <canvas id="game" width="672" height="744" aria-label="Mini Maze Muncher game board"></canvas>
 
     <p class="help">
@@ -24,6 +56,6 @@
     </p>
   </main>
 
-  <script src="game.js?v=4"></script>
+  <script src="game.js?v=5"></script>
 </body>
 </html>
