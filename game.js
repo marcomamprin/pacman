@@ -14,6 +14,7 @@
   const STEP_MS = 115;
   const READY_SECONDS = 5;
   const READY_TICKS = Math.ceil((READY_SECONDS * 1000) / STEP_MS);
+  const GHOST_TACTICS = ["chaser", "ambusher", "flanker", "trapper"];
 
   const MAZE_TEMPLATE = [
     "############################",
@@ -104,6 +105,7 @@
       startR: g.r,
       dir: ["left", "right", "up", "down"][i % 4],
       color: colors[i % colors.length],
+      id: i,
       eaten: false
     }));
   }
@@ -200,6 +202,241 @@
   }
 
   /**
+   * Builds a stable key for a maze tile.
+   *
+   * @param {{c: number, r: number}} tile Tile to identify.
+   * @returns {string} Unique tile key.
+   */
+  function tileKey(tile) {
+    return `${tile.c},${tile.r}`;
+  }
+
+  /**
+   * Returns the open tile reached by moving once in a direction.
+   *
+   * @param {{c: number, r: number}} tile Starting tile.
+   * @param {string} dirName Direction key from DIRS.
+   * @returns {{c: number, r: number} | null} Adjacent tile or null when blocked.
+   */
+  function adjacentTile(tile, dirName) {
+    const d = DIRS[dirName];
+    const nc = tile.c + d.dc;
+    const nr = tile.r + d.dr;
+    if (isWall(nc, nr)) return null;
+    return { c: wrappedC(nc), r: nr };
+  }
+
+  /**
+   * Finds the nearest open tile to a requested target.
+   *
+   * @param {{c: number, r: number}} target Requested target tile.
+   * @returns {{c: number, r: number}} Reachable open tile near the target.
+   */
+  function nearestOpenTile(target) {
+    const start = {
+      c: wrappedC(target.c),
+      r: Math.max(0, Math.min(ROWS - 1, target.r))
+    };
+    if (!isWall(start.c, start.r)) return start;
+
+    const queue = [start];
+    const visited = new Set([tileKey(start)]);
+    while (queue.length) {
+      const current = queue.shift();
+      for (const dirName of Object.keys(DIRS)) {
+        const d = DIRS[dirName];
+        const next = {
+          c: wrappedC(current.c + d.dc),
+          r: current.r + d.dr
+        };
+        if (next.r < 0 || next.r >= ROWS) continue;
+        const key = tileKey(next);
+        if (visited.has(key)) continue;
+        if (!isWall(next.c, next.r)) return next;
+        visited.add(key);
+        queue.push(next);
+      }
+    }
+
+    return { c: player.c, r: player.r };
+  }
+
+  /**
+   * Measures the shortest route length between two tiles.
+   *
+   * @param {{c: number, r: number}} start Starting tile.
+   * @param {{c: number, r: number}} target Target tile.
+   * @returns {number} Number of tile steps, or Infinity when unreachable.
+   */
+  function routeDistance(start, target) {
+    const origin = nearestOpenTile(start);
+    const destination = nearestOpenTile(target);
+    if (tileKey(origin) === tileKey(destination)) return 0;
+
+    const queue = [{ ...origin, distance: 0 }];
+    const visited = new Set([tileKey(origin)]);
+    while (queue.length) {
+      const current = queue.shift();
+      for (const dirName of Object.keys(DIRS)) {
+        const next = adjacentTile(current, dirName);
+        if (!next) continue;
+        const key = tileKey(next);
+        if (visited.has(key)) continue;
+        if (key === tileKey(destination)) return current.distance + 1;
+        visited.add(key);
+        queue.push({ ...next, distance: current.distance + 1 });
+      }
+    }
+
+    return Infinity;
+  }
+
+  /**
+   * Returns the direction Pac-Man is likely trying to travel.
+   *
+   * @returns {string} Direction key from DIRS.
+   */
+  function playerTravelDirection() {
+    if (canMove(player, player.nextDir)) return player.nextDir;
+    return player.dir;
+  }
+
+  /**
+   * Projects a tile forward through open corridor spaces.
+   *
+   * @param {{c: number, r: number}} origin Starting tile.
+   * @param {string} dirName Direction to project.
+   * @param {number} steps Maximum number of tiles to project.
+   * @returns {{c: number, r: number}} Projected open target tile.
+   */
+  function projectTile(origin, dirName, steps) {
+    let target = { c: origin.c, r: origin.r };
+    for (let i = 0; i < steps; i++) {
+      const next = adjacentTile(target, dirName);
+      if (!next) break;
+      target = next;
+    }
+    return nearestOpenTile(target);
+  }
+
+  /**
+   * Returns the two directions perpendicular to a travel direction.
+   *
+   * @param {string} dirName Direction key from DIRS.
+   * @returns {string[]} Perpendicular direction keys.
+   */
+  function perpendicularDirs(dirName) {
+    return dirName === "left" || dirName === "right" ? ["up", "down"] : ["left", "right"];
+  }
+
+  /**
+   * Assigns a dynamic team tactic based on proximity to the player.
+   *
+   * @param {{c: number, r: number, eaten: boolean}} ghost Ghost to classify.
+   * @returns {string} Tactical role name.
+   */
+  function ghostTactic(ghost) {
+    const hunters = ghosts
+      .filter(g => !g.eaten)
+      .sort((a, b) => routeDistance(a, player) - routeDistance(b, player));
+    const slot = Math.max(0, hunters.indexOf(ghost));
+    return GHOST_TACTICS[slot % GHOST_TACTICS.length];
+  }
+
+  /**
+   * Selects a coordinated target tile for a hunting ghost.
+   *
+   * @param {{c: number, r: number, id: number}} ghost Ghost choosing a target.
+   * @returns {{c: number, r: number}} Tactical target tile.
+   */
+  function coordinatedGhostTarget(ghost) {
+    const travelDir = playerTravelDirection();
+    const tactic = ghostTactic(ghost);
+
+    if (tactic === "chaser") {
+      return { c: player.c, r: player.r };
+    }
+
+    if (tactic === "ambusher") {
+      return projectTile(player, travelDir, 6);
+    }
+
+    if (tactic === "flanker") {
+      const sideDirs = perpendicularDirs(travelDir);
+      const sideDir = sideDirs[ghost.id % sideDirs.length];
+      return projectTile(projectTile(player, travelDir, 3), sideDir, 5);
+    }
+
+    return projectTile(player, REVERSE[travelDir], 5);
+  }
+
+  /**
+   * Checks whether another active ghost already occupies a tile.
+   *
+   * @param {{c: number, r: number}} tile Tile to inspect.
+   * @param {{c: number, r: number}} ghost Ghost that is allowed to occupy it.
+   * @returns {boolean} True when another ghost is already there.
+   */
+  function occupiedByOtherGhost(tile, ghost) {
+    return ghosts.some(g => g !== ghost && !g.eaten && g.c === tile.c && g.r === tile.r);
+  }
+
+  /**
+   * Chooses the shortest path direction toward a target, with team spacing.
+   *
+   * @param {{c: number, r: number, dir: string}} ghost Ghost to steer.
+   * @param {{c: number, r: number}} target Target tile.
+   * @returns {string} Best direction key from DIRS.
+   */
+  function shortestPathDirection(ghost, target) {
+    let options = validDirs(ghost);
+    if (!options.length) return ghost.dir;
+
+    const nonReverse = options.filter(d => d !== REVERSE[ghost.dir]);
+    if (nonReverse.length) options = nonReverse;
+
+    return options
+      .map(dirName => {
+        const next = adjacentTile(ghost, dirName);
+        let score = next ? routeDistance(next, target) : Infinity;
+        if (!Number.isFinite(score) && next) {
+          score = 1000 + Math.hypot(next.c - target.c, next.r - target.r);
+        }
+        if (next && occupiedByOtherGhost(next, ghost)) score += 5;
+        if (dirName === ghost.dir) score -= 0.25;
+        if (dirName === REVERSE[ghost.dir]) score += 1.5;
+        return { dirName, score };
+      })
+      .sort((a, b) => a.score - b.score)[0].dirName;
+  }
+
+  /**
+   * Chooses a direction that carries a frightened ghost away from the player.
+   *
+   * @param {{c: number, r: number, dir: string}} ghost Ghost to steer.
+   * @returns {string} Best escape direction key from DIRS.
+   */
+  function fleePlayerDirection(ghost) {
+    let options = validDirs(ghost);
+    if (!options.length) return ghost.dir;
+
+    const nonReverse = options.filter(d => d !== REVERSE[ghost.dir]);
+    if (nonReverse.length) options = nonReverse;
+
+    return options
+      .map(dirName => {
+        const next = adjacentTile(ghost, dirName);
+        let score = next ? routeDistance(next, player) : -Infinity;
+        if (!Number.isFinite(score) && next) {
+          score = Math.hypot(next.c - player.c, next.r - player.r);
+        }
+        if (dirName === ghost.dir) score += 0.25;
+        return { dirName, score };
+      })
+      .sort((a, b) => b.score - a.score)[0].dirName;
+  }
+
+  /**
    * Chooses the player's active direction from queued input.
    *
    * @returns {string} Direction the player should try this tick.
@@ -210,29 +447,20 @@
   }
 
   /**
-   * Chooses a ghost direction, preferring pursuit unless frightened or wandering.
+   * Chooses a ghost direction using pathfinding and group tactics.
    *
-   * @param {{c: number, r: number, dir: string, startC: number, startR: number, eaten: boolean}} ghost Ghost to steer.
+   * @param {{c: number, r: number, dir: string, startC: number, startR: number, eaten: boolean, id: number}} ghost Ghost to steer.
    * @returns {string} Direction the ghost should try this tick.
    */
   function chooseGhostDirection(ghost) {
-    let options = validDirs(ghost).filter(d => d !== REVERSE[ghost.dir]);
-    if (!options.length) options = validDirs(ghost);
-    if (!options.length) return ghost.dir;
-
     if (frightenedTicks > 0 && !ghost.eaten) {
-      return options[Math.floor(Math.random() * options.length)];
+      return fleePlayerDirection(ghost);
     }
 
-    const target = ghost.eaten ? { c: ghost.startC, r: ghost.startR } : player;
-    if (!ghost.eaten && Math.random() < 0.2) return options[Math.floor(Math.random() * options.length)];
-
-    return options.sort((a, b) => {
-      const da = DIRS[a], db = DIRS[b];
-      const ad = Math.hypot(ghost.c + da.dc - target.c, ghost.r + da.dr - target.r);
-      const bd = Math.hypot(ghost.c + db.dc - target.c, ghost.r + db.dr - target.r);
-      return ad - bd;
-    })[0];
+    const target = ghost.eaten
+      ? { c: ghost.startC, r: ghost.startR }
+      : coordinatedGhostTarget(ghost);
+    return shortestPathDirection(ghost, target);
   }
 
   /**
