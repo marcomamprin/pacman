@@ -15,6 +15,14 @@
   const READY_SECONDS = 5;
   const READY_TICKS = Math.ceil((READY_SECONDS * 1000) / STEP_MS);
   const GHOST_TACTICS = ["chaser", "ambusher", "flanker", "trapper"];
+  const PLAYER_MEMORY_LIMIT = 140;
+  const PATTERN_PREDICTION_STEPS = 8;
+  const LEARNING_DECAY = 0.985;
+  const MIN_LEARNED_WEIGHT = 0.05;
+  const BEHAVIOR_CLUSTER_LIMIT = 10;
+  const BEHAVIOR_CLUSTER_RATE = 0.18;
+  const BEHAVIOR_CLUSTER_DECAY = 0.992;
+  const BEHAVIOR_CLUSTER_THRESHOLD = 1.1;
 
   const MAZE_TEMPLATE = [
     "############################",
@@ -56,6 +64,7 @@
     up: { dc: 0, dr: -1 },
     down: { dc: 0, dr: 1 }
   };
+  const DIR_NAMES = Object.keys(DIRS);
 
   const REVERSE = { left: "right", right: "left", up: "down", down: "up" };
 
@@ -67,6 +76,7 @@
   };
 
   let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks;
+  let playerTrail, learnedTurns, behaviorClusters;
   let loopId = null;
   let tickCounter = 0;
 
@@ -121,6 +131,7 @@
     readyTicks = READY_TICKS;
     state = "playing";
     tickCounter = 0;
+    resetLearning();
     parseMaze();
     updateHud();
     draw();
@@ -198,7 +209,16 @@
    * @returns {string[]} Open direction keys.
    */
   function validDirs(entity) {
-    return Object.keys(DIRS).filter(d => canMove(entity, d));
+    return DIR_NAMES.filter(d => canMove(entity, d));
+  }
+
+  /**
+   * Clears the ghosts' learned player movement data.
+   */
+  function resetLearning() {
+    playerTrail = [];
+    learnedTurns = new Map();
+    behaviorClusters = [];
   }
 
   /**
@@ -209,6 +229,190 @@
    */
   function tileKey(tile) {
     return `${tile.c},${tile.r}`;
+  }
+
+  /**
+   * Builds a learning key for a tile entered from a specific direction.
+   *
+   * @param {{c: number, r: number}} tile Tile where a decision happened.
+   * @param {string} incomingDir Direction the player was traveling.
+   * @returns {string} Unique learned-turn key.
+   */
+  function turnKey(tile, incomingDir) {
+    return `${tileKey(tile)},${incomingDir}`;
+  }
+
+  /**
+   * Updates the player movement model after a successful move.
+   *
+   * @param {{c: number, r: number, dir: string}} previousPlayer Player state before moving.
+   */
+  function learnPlayerMove(previousPlayer) {
+    decayLearnedTurns();
+    decayBehaviorClusters();
+    const behaviorVector = playerContextVector(previousPlayer, player.nextDir);
+
+    playerTrail.push({ c: player.c, r: player.r, dir: player.dir });
+    if (playerTrail.length > PLAYER_MEMORY_LIMIT) playerTrail.shift();
+
+    const key = turnKey(previousPlayer, previousPlayer.dir);
+    const counts = learnedTurns.get(key) || { left: 0, right: 0, up: 0, down: 0 };
+    counts[player.dir]++;
+    learnedTurns.set(key, counts);
+    learnBehaviorCluster(behaviorVector, player.dir);
+  }
+
+  /**
+   * Fades old player habits so new patterns become more important over time.
+   */
+  function decayLearnedTurns() {
+    learnedTurns.forEach((counts, key) => {
+      let total = 0;
+      DIR_NAMES.forEach(dirName => {
+        counts[dirName] *= LEARNING_DECAY;
+        total += counts[dirName];
+      });
+      if (total < MIN_LEARNED_WEIGHT) learnedTurns.delete(key);
+    });
+  }
+
+  /**
+   * Fades old movement clusters so recent behavior can reshape predictions.
+   */
+  function decayBehaviorClusters() {
+    behaviorClusters = behaviorClusters.filter(cluster => {
+      let total = 0;
+      cluster.weight *= BEHAVIOR_CLUSTER_DECAY;
+      DIR_NAMES.forEach(dirName => {
+        cluster.outcomes[dirName] *= BEHAVIOR_CLUSTER_DECAY;
+        total += cluster.outcomes[dirName];
+      });
+      return cluster.weight >= MIN_LEARNED_WEIGHT || total >= MIN_LEARNED_WEIGHT;
+    });
+  }
+
+  /**
+   * Converts a direction into a one-hot feature vector.
+   *
+   * @param {string} dirName Direction key from DIRS.
+   * @returns {number[]} One-hot encoded direction.
+   */
+  function directionVector(dirName) {
+    return DIR_NAMES.map(d => d === dirName ? 1 : 0);
+  }
+
+  /**
+   * Encodes which directions are available from a tile.
+   *
+   * @param {{c: number, r: number}} tile Tile to inspect.
+   * @returns {number[]} Open-direction feature vector.
+   */
+  function openDirectionVector(tile) {
+    return DIR_NAMES.map(dirName => canMove(tile, dirName) ? 1 : 0);
+  }
+
+  /**
+   * Reads a recent movement direction as a feature vector.
+   *
+   * @param {number} offset Number of trail entries back from the latest move.
+   * @returns {number[]} One-hot encoded recent direction.
+   */
+  function recentDirectionVector(offset) {
+    const sample = playerTrail[playerTrail.length - offset];
+    return directionVector(sample?.dir || player.dir);
+  }
+
+  /**
+   * Builds an unsupervised learning vector for Pac-Man's current context.
+   *
+   * @param {{c: number, r: number, dir: string}} tile Tile and travel direction.
+   * @param {string} intendedDir Direction Pac-Man is currently trying to take.
+   * @returns {number[]} Numeric behavior features for clustering.
+   */
+  function playerContextVector(tile, intendedDir) {
+    return [
+      tile.c / (COLS - 1),
+      tile.r / (ROWS - 1),
+      ...directionVector(tile.dir),
+      ...directionVector(intendedDir),
+      ...openDirectionVector(tile),
+      ...recentDirectionVector(1),
+      ...recentDirectionVector(2)
+    ];
+  }
+
+  /**
+   * Measures squared distance between two feature vectors.
+   *
+   * @param {number[]} a First vector.
+   * @param {number[]} b Second vector.
+   * @returns {number} Squared Euclidean distance.
+   */
+  function squaredDistance(a, b) {
+    return a.reduce((total, value, i) => total + (value - b[i]) ** 2, 0);
+  }
+
+  /**
+   * Finds the nearest learned movement cluster to a behavior vector.
+   *
+   * @param {number[]} vector Behavior vector to match.
+   * @returns {{cluster: object, distance: number} | null} Nearest cluster match.
+   */
+  function nearestBehaviorCluster(vector) {
+    if (!behaviorClusters.length) return null;
+    return behaviorClusters
+      .map(cluster => ({
+        cluster,
+        distance: Math.sqrt(squaredDistance(vector, cluster.center))
+      }))
+      .sort((a, b) => a.distance - b.distance)[0];
+  }
+
+  /**
+   * Creates a new unsupervised behavior cluster.
+   *
+   * @param {number[]} vector Initial cluster center.
+   * @param {string} outcomeDir Direction Pac-Man chose after this context.
+   * @returns {{center: number[], outcomes: object, weight: number, samples: number}} Cluster record.
+   */
+  function createBehaviorCluster(vector, outcomeDir) {
+    const outcomes = { left: 0, right: 0, up: 0, down: 0 };
+    outcomes[outcomeDir] = 1;
+    return {
+      center: [...vector],
+      outcomes,
+      weight: 1,
+      samples: 1
+    };
+  }
+
+  /**
+   * Trains the online movement clusters from one observed player context.
+   *
+   * @param {number[]} vector Movement-context features.
+   * @param {string} outcomeDir Direction Pac-Man chose after this context.
+   */
+  function learnBehaviorCluster(vector, outcomeDir) {
+    const match = nearestBehaviorCluster(vector);
+    const shouldCreate = !match || match.distance > BEHAVIOR_CLUSTER_THRESHOLD;
+
+    if (shouldCreate && behaviorClusters.length < BEHAVIOR_CLUSTER_LIMIT) {
+      behaviorClusters.push(createBehaviorCluster(vector, outcomeDir));
+      return;
+    }
+
+    if (shouldCreate) {
+      const weakest = behaviorClusters.sort((a, b) => a.weight - b.weight)[0];
+      Object.assign(weakest, createBehaviorCluster(vector, outcomeDir));
+      return;
+    }
+
+    const cluster = match.cluster;
+    const rate = Math.min(BEHAVIOR_CLUSTER_RATE, 1 / (cluster.samples + 1));
+    cluster.center = cluster.center.map((value, i) => value + (vector[i] - value) * rate);
+    cluster.outcomes[outcomeDir]++;
+    cluster.weight++;
+    cluster.samples++;
   }
 
   /**
@@ -243,7 +447,7 @@
     const visited = new Set([tileKey(start)]);
     while (queue.length) {
       const current = queue.shift();
-      for (const dirName of Object.keys(DIRS)) {
+      for (const dirName of DIR_NAMES) {
         const d = DIRS[dirName];
         const next = {
           c: wrappedC(current.c + d.dc),
@@ -277,7 +481,7 @@
     const visited = new Set([tileKey(origin)]);
     while (queue.length) {
       const current = queue.shift();
-      for (const dirName of Object.keys(DIRS)) {
+      for (const dirName of DIR_NAMES) {
         const next = adjacentTile(current, dirName);
         if (!next) continue;
         const key = tileKey(next);
@@ -320,6 +524,88 @@
   }
 
   /**
+   * Uses the nearest unsupervised movement cluster to score likely directions.
+   *
+   * @param {{c: number, r: number}} tile Tile being predicted from.
+   * @param {string} incomingDir Direction entering the tile.
+   * @returns {{left: number, right: number, up: number, down: number} | null} Cluster-derived direction weights.
+   */
+  function clusteredTurnWeights(tile, incomingDir) {
+    const vector = playerContextVector({ c: tile.c, r: tile.r, dir: incomingDir }, incomingDir);
+    const match = nearestBehaviorCluster(vector);
+    const maxDistance = BEHAVIOR_CLUSTER_THRESHOLD * 1.75;
+    if (!match || match.distance > maxDistance) return null;
+
+    const confidence = (maxDistance - match.distance) / maxDistance;
+    const weights = { left: 0, right: 0, up: 0, down: 0 };
+    DIR_NAMES.forEach(dirName => {
+      weights[dirName] = match.cluster.outcomes[dirName] * (1 + confidence);
+    });
+    return weights;
+  }
+
+  /**
+   * Picks the player's most likely turn from exact memory and learned clusters.
+   *
+   * @param {{c: number, r: number}} tile Tile being predicted from.
+   * @param {string} incomingDir Direction entering the tile.
+   * @returns {string | null} Most likely learned direction, if known.
+   */
+  function learnedTurnDirection(tile, incomingDir) {
+    const weights = { left: 0, right: 0, up: 0, down: 0 };
+    const counts = learnedTurns.get(turnKey(tile, incomingDir));
+    if (counts) {
+      DIR_NAMES.forEach(dirName => {
+        weights[dirName] += counts[dirName];
+      });
+    }
+
+    const clusterWeights = clusteredTurnWeights(tile, incomingDir);
+    if (clusterWeights) {
+      DIR_NAMES.forEach(dirName => {
+        weights[dirName] += clusterWeights[dirName] * 1.25;
+      });
+    }
+
+    const choices = DIR_NAMES
+      .filter(dirName => weights[dirName] > 0 && canMove(tile, dirName))
+      .sort((a, b) => weights[b] - weights[a]);
+    return choices[0] || null;
+  }
+
+  /**
+   * Predicts where the player is likely to be after following learned habits.
+   *
+   * @param {number} steps Number of future tiles to simulate.
+   * @returns {{c: number, r: number, dir: string}} Predicted player tile and direction.
+   */
+  function predictPlayerTarget(steps) {
+    let prediction = {
+      c: player.c,
+      r: player.r,
+      dir: playerTravelDirection()
+    };
+
+    for (let i = 0; i < steps; i++) {
+      let dirName = learnedTurnDirection(prediction, prediction.dir);
+      if (!dirName && canMove(prediction, prediction.dir)) {
+        dirName = prediction.dir;
+      }
+      if (!dirName) {
+        const options = validDirs(prediction).filter(d => d !== REVERSE[prediction.dir]);
+        dirName = options[0] || validDirs(prediction)[0];
+      }
+      if (!dirName) break;
+
+      const next = adjacentTile(prediction, dirName);
+      if (!next) break;
+      prediction = { ...next, dir: dirName };
+    }
+
+    return prediction;
+  }
+
+  /**
    * Returns the two directions perpendicular to a travel direction.
    *
    * @param {string} dirName Direction key from DIRS.
@@ -352,22 +638,25 @@
   function coordinatedGhostTarget(ghost) {
     const travelDir = playerTravelDirection();
     const tactic = ghostTactic(ghost);
+    const learnedSteps = Math.min(14, PATTERN_PREDICTION_STEPS + Math.floor(playerTrail.length / 35));
+    const nearPrediction = predictPlayerTarget(Math.max(3, Math.floor(learnedSteps / 2)));
+    const farPrediction = predictPlayerTarget(learnedSteps);
 
     if (tactic === "chaser") {
       return { c: player.c, r: player.r };
     }
 
     if (tactic === "ambusher") {
-      return projectTile(player, travelDir, 6);
+      return nearestOpenTile(farPrediction);
     }
 
     if (tactic === "flanker") {
       const sideDirs = perpendicularDirs(travelDir);
       const sideDir = sideDirs[ghost.id % sideDirs.length];
-      return projectTile(projectTile(player, travelDir, 3), sideDir, 5);
+      return projectTile(nearPrediction, sideDir, 5);
     }
 
-    return projectTile(player, REVERSE[travelDir], 5);
+    return projectTile(farPrediction, REVERSE[farPrediction.dir || travelDir], 4);
   }
 
   /**
@@ -543,8 +832,10 @@
 
     if (frightenedTicks > 0) frightenedTicks--;
 
+    const previousPlayer = { c: player.c, r: player.r, dir: player.dir };
     player.dir = choosePlayerDirection();
-    moveOneTile(player, player.dir);
+    const playerMoved = moveOneTile(player, player.dir);
+    if (playerMoved) learnPlayerMove(previousPlayer);
     player.mouthOpen = !player.mouthOpen;
     eatPellet();
 
