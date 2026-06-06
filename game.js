@@ -14,7 +14,7 @@
   const STEP_MS = 115;
   const READY_SECONDS = 5;
   const READY_TICKS = Math.ceil((READY_SECONDS * 1000) / STEP_MS);
-  const GHOST_TACTICS = ["chaser", "ambusher", "flanker", "trapper"];
+  const GHOST_TACTICS = ["chaser", "ambusher", "guardian", "trapper"];
   const PLAYER_MEMORY_LIMIT = 140;
   const PATTERN_PREDICTION_STEPS = 8;
   const LEARNING_DECAY = 0.985;
@@ -23,6 +23,11 @@
   const BEHAVIOR_CLUSTER_RATE = 0.18;
   const BEHAVIOR_CLUSTER_DECAY = 0.992;
   const BEHAVIOR_CLUSTER_THRESHOLD = 1.1;
+  const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
+  const LEARNING_SAVE_INTERVAL = 10;
+  const BASE_FRIGHTENED_TICKS = 70;
+  const MIN_FRIGHTENED_TICKS = 18;
+  const TUNNEL_ROW = 14;
 
   const MAZE_TEMPLATE = [
     "############################",
@@ -37,7 +42,7 @@
     "######.##### ## #####.######",
     "     #.##### ## #####.#     ",
     "     #.##          ##.#     ",
-    "     #.## ###GG### ##.#     ",
+    "     #.## ##GGGG## ##.#     ",
     "######.## #      # ##.######",
     "      .   #      #   .      ",
     "######.## #      # ##.######",
@@ -75,8 +80,9 @@
     ArrowDown: "down", KeyS: "down"
   };
 
-  let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks;
+  let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks, survivalTicks;
   let playerTrail, learnedTurns, behaviorClusters;
+  let learnedMovesSinceSave = 0;
   let loopId = null;
   let tickCounter = 0;
 
@@ -131,7 +137,9 @@
     readyTicks = READY_TICKS;
     state = "playing";
     tickCounter = 0;
-    resetLearning();
+    survivalTicks = 0;
+    if (learnedTurns && behaviorClusters) saveLearning();
+    loadLearning();
     parseMaze();
     updateHud();
     draw();
@@ -219,6 +227,63 @@
     playerTrail = [];
     learnedTurns = new Map();
     behaviorClusters = [];
+    learnedMovesSinceSave = 0;
+  }
+
+  /**
+   * Loads persistent ghost learning from browser storage.
+   */
+  function loadLearning() {
+    resetLearning();
+
+    try {
+      const rawLearning = localStorage.getItem(LEARNING_STORAGE_KEY);
+      if (!rawLearning) return;
+
+      const stored = JSON.parse(rawLearning);
+      learnedTurns = new Map((stored.learnedTurns || []).map(([key, counts]) => ([
+        key,
+        {
+          left: Number(counts.left) || 0,
+          right: Number(counts.right) || 0,
+          up: Number(counts.up) || 0,
+          down: Number(counts.down) || 0
+        }
+      ])));
+      behaviorClusters = (stored.behaviorClusters || [])
+        .filter(cluster => Array.isArray(cluster.center) && cluster.center.length)
+        .slice(0, BEHAVIOR_CLUSTER_LIMIT)
+        .map(cluster => ({
+          center: cluster.center.map(Number),
+          outcomes: {
+            left: Number(cluster.outcomes?.left) || 0,
+            right: Number(cluster.outcomes?.right) || 0,
+            up: Number(cluster.outcomes?.up) || 0,
+            down: Number(cluster.outcomes?.down) || 0
+          },
+          weight: Number(cluster.weight) || 1,
+          samples: Number(cluster.samples) || 1
+        }));
+    } catch {
+      resetLearning();
+    }
+  }
+
+  /**
+   * Saves persistent ghost learning into browser storage.
+   */
+  function saveLearning() {
+    if (!learnedTurns || !behaviorClusters) return;
+
+    try {
+      localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify({
+        learnedTurns: [...learnedTurns.entries()],
+        behaviorClusters
+      }));
+      learnedMovesSinceSave = 0;
+    } catch {
+      // Storage can fail in private browsing or full-quota situations.
+    }
   }
 
   /**
@@ -260,6 +325,8 @@
     counts[player.dir]++;
     learnedTurns.set(key, counts);
     learnBehaviorCluster(behaviorVector, player.dir);
+    learnedMovesSinceSave++;
+    if (learnedMovesSinceSave >= LEARNING_SAVE_INTERVAL) saveLearning();
   }
 
   /**
@@ -349,7 +416,7 @@
    * @returns {number} Squared Euclidean distance.
    */
   function squaredDistance(a, b) {
-    return a.reduce((total, value, i) => total + (value - b[i]) ** 2, 0);
+    return a.reduce((total, value, i) => total + (value - (Number(b[i]) || 0)) ** 2, 0);
   }
 
   /**
@@ -506,6 +573,45 @@
   }
 
   /**
+   * Computes the current difficulty pressure from level, survival, and learning depth.
+   *
+   * @returns {number} Adaptive pressure score.
+   */
+  function difficultyPressure() {
+    const levelPressure = Math.max(0, level - 1);
+    const survivalPressure = Math.floor(survivalTicks / 90);
+    const learningPressure = Math.floor(playerTrail.length / 45);
+    return Math.min(10, levelPressure + survivalPressure + learningPressure);
+  }
+
+  /**
+   * Chooses how far ahead the ghosts should predict Pac-Man.
+   *
+   * @returns {number} Number of future tiles to simulate.
+   */
+  function predictionHorizon() {
+    return Math.min(24, PATTERN_PREDICTION_STEPS + difficultyPressure() + Math.floor(playerTrail.length / 35));
+  }
+
+  /**
+   * Computes how long power pellets frighten ghosts at this difficulty.
+   *
+   * @returns {number} Frightened mode duration in ticks.
+   */
+  function frightenedDuration() {
+    return Math.max(MIN_FRIGHTENED_TICKS, BASE_FRIGHTENED_TICKS - difficultyPressure() * 5 - Math.max(0, level - 1) * 4);
+  }
+
+  /**
+   * Scales cluster prediction influence as ghosts build confidence.
+   *
+   * @returns {number} Cluster prediction weight.
+   */
+  function clusterPredictionWeight() {
+    return 1.15 + difficultyPressure() * 0.18;
+  }
+
+  /**
    * Projects a tile forward through open corridor spaces.
    *
    * @param {{c: number, r: number}} origin Starting tile.
@@ -545,13 +651,13 @@
   }
 
   /**
-   * Picks the player's most likely turn from exact memory and learned clusters.
+   * Combines exact movement memory and behavior clusters into direction weights.
    *
    * @param {{c: number, r: number}} tile Tile being predicted from.
    * @param {string} incomingDir Direction entering the tile.
-   * @returns {string | null} Most likely learned direction, if known.
+   * @returns {{left: number, right: number, up: number, down: number}} Learned direction weights.
    */
-  function learnedTurnDirection(tile, incomingDir) {
+  function learnedTurnWeights(tile, incomingDir) {
     const weights = { left: 0, right: 0, up: 0, down: 0 };
     const counts = learnedTurns.get(turnKey(tile, incomingDir));
     if (counts) {
@@ -563,10 +669,38 @@
     const clusterWeights = clusteredTurnWeights(tile, incomingDir);
     if (clusterWeights) {
       DIR_NAMES.forEach(dirName => {
-        weights[dirName] += clusterWeights[dirName] * 1.25;
+        weights[dirName] += clusterWeights[dirName] * clusterPredictionWeight();
       });
     }
 
+    return weights;
+  }
+
+  /**
+   * Measures how strongly the model prefers one likely player direction.
+   *
+   * @param {{c: number, r: number}} tile Tile being predicted from.
+   * @param {string} incomingDir Direction entering the tile.
+   * @returns {number} Confidence from 0 to 1.
+   */
+  function learnedTurnConfidence(tile, incomingDir) {
+    const weights = learnedTurnWeights(tile, incomingDir);
+    const openWeights = DIR_NAMES
+      .filter(dirName => canMove(tile, dirName))
+      .map(dirName => weights[dirName]);
+    const total = openWeights.reduce((sum, weight) => sum + weight, 0);
+    return total > 0 ? Math.max(...openWeights) / total : 0;
+  }
+
+  /**
+   * Picks the player's most likely turn from exact memory and learned clusters.
+   *
+   * @param {{c: number, r: number}} tile Tile being predicted from.
+   * @param {string} incomingDir Direction entering the tile.
+   * @returns {string | null} Most likely learned direction, if known.
+   */
+  function learnedTurnDirection(tile, incomingDir) {
+    const weights = learnedTurnWeights(tile, incomingDir);
     const choices = DIR_NAMES
       .filter(dirName => weights[dirName] > 0 && canMove(tile, dirName))
       .sort((a, b) => weights[b] - weights[a]);
@@ -606,6 +740,78 @@
   }
 
   /**
+   * Lists uneaten power pellet tiles.
+   *
+   * @returns {{c: number, r: number}[]} Remaining power pellet tiles.
+   */
+  function remainingPowerPellets() {
+    const pellets = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === "o") pellets.push({ c, r });
+      }
+    }
+    return pellets;
+  }
+
+  /**
+   * Chooses a power pellet to deny from Pac-Man.
+   *
+   * @param {{c: number, r: number}} ghost Ghost choosing a guard point.
+   * @returns {{c: number, r: number} | null} Guard target or null if no power pellet remains.
+   */
+  function powerPelletGuardTarget(ghost) {
+    const pellets = remainingPowerPellets();
+    if (!pellets.length) return null;
+
+    return pellets
+      .map(pellet => ({
+        pellet,
+        score: routeDistance(player, pellet) * 1.4 + routeDistance(ghost, pellet)
+      }))
+      .sort((a, b) => a.score - b.score)[0].pellet;
+  }
+
+  /**
+   * Predicts an exit point when Pac-Man is repeating a route loop.
+   *
+   * @returns {{c: number, r: number} | null} Intercept tile for a repeated loop.
+   */
+  function loopTrapTarget() {
+    if (playerTrail.length < 18) return null;
+
+    const latest = playerTrail[playerTrail.length - 1];
+    for (let i = playerTrail.length - 9; i >= 0; i--) {
+      const sample = playerTrail[i];
+      if (sample.c !== latest.c || sample.r !== latest.r || sample.dir !== latest.dir) continue;
+
+      const exitIndex = Math.min(playerTrail.length - 1, i + 5 + Math.floor(difficultyPressure() / 2));
+      const exit = playerTrail[exitIndex];
+      return projectTile(exit, exit.dir, 2 + Math.floor(difficultyPressure() / 3));
+    }
+
+    return null;
+  }
+
+  /**
+   * Chooses the opposite tunnel exit when Pac-Man is near or heading into a tunnel.
+   *
+   * @returns {{c: number, r: number} | null} Tunnel cutoff target.
+   */
+  function tunnelTrapTarget() {
+    const leftExit = { c: 0, r: TUNNEL_ROW };
+    const rightExit = { c: COLS - 1, r: TUNNEL_ROW };
+    const travelDir = playerTravelDirection();
+    const predicted = predictPlayerTarget(5);
+    const playerNearTunnel = Math.min(routeDistance(player, leftExit), routeDistance(player, rightExit)) <= 8;
+    const predictionNearTunnel = predicted.r === TUNNEL_ROW && (predicted.c <= 5 || predicted.c >= COLS - 6);
+    if (!playerNearTunnel && !predictionNearTunnel) return null;
+
+    if (player.c < COLS / 2 || travelDir === "left") return rightExit;
+    return leftExit;
+  }
+
+  /**
    * Returns the two directions perpendicular to a travel direction.
    *
    * @param {string} dirName Direction key from DIRS.
@@ -638,7 +844,7 @@
   function coordinatedGhostTarget(ghost) {
     const travelDir = playerTravelDirection();
     const tactic = ghostTactic(ghost);
-    const learnedSteps = Math.min(14, PATTERN_PREDICTION_STEPS + Math.floor(playerTrail.length / 35));
+    const learnedSteps = predictionHorizon();
     const nearPrediction = predictPlayerTarget(Math.max(3, Math.floor(learnedSteps / 2)));
     const farPrediction = predictPlayerTarget(learnedSteps);
 
@@ -650,13 +856,24 @@
       return nearestOpenTile(farPrediction);
     }
 
-    if (tactic === "flanker") {
+    if (tactic === "guardian") {
+      const guardTarget = powerPelletGuardTarget(ghost);
+      if (guardTarget && routeDistance(player, guardTarget) <= 12 + difficultyPressure()) {
+        return guardTarget;
+      }
+
       const sideDirs = perpendicularDirs(travelDir);
       const sideDir = sideDirs[ghost.id % sideDirs.length];
-      return projectTile(nearPrediction, sideDir, 5);
+      return projectTile(nearPrediction, sideDir, 5 + Math.floor(difficultyPressure() / 3));
     }
 
-    return projectTile(farPrediction, REVERSE[farPrediction.dir || travelDir], 4);
+    const loopTarget = loopTrapTarget();
+    if (loopTarget) return loopTarget;
+
+    const tunnelTarget = tunnelTrapTarget();
+    if (tunnelTarget) return tunnelTarget;
+
+    return projectTile(farPrediction, REVERSE[farPrediction.dir || travelDir], 4 + Math.floor(difficultyPressure() / 2));
   }
 
   /**
@@ -753,6 +970,49 @@
   }
 
   /**
+   * Decides whether ghosts move on this tick at the current pressure.
+   *
+   * @returns {boolean} True when ghosts should advance.
+   */
+  function shouldMoveGhostsThisTick() {
+    const pressure = difficultyPressure();
+    const skipEvery = pressure < 2 ? 3 : pressure < 5 ? 4 : 0;
+    return skipEvery === 0 || tickCounter % skipEvery !== 0;
+  }
+
+  /**
+   * Chooses how many ghost move passes to run this tick.
+   *
+   * @returns {number} Ghost move passes for this tick.
+   */
+  function ghostMovePasses() {
+    if (!shouldMoveGhostsThisTick()) return 0;
+
+    const pressure = difficultyPressure();
+    const confidence = learnedTurnConfidence(player, playerTravelDirection());
+    let passes = 1;
+    if (pressure >= 2 && confidence >= 0.55 && tickCounter % Math.max(3, 9 - pressure) === 0) passes++;
+    if (pressure >= 7 && tickCounter % 5 === 0) passes++;
+    return Math.min(3, passes);
+  }
+
+  /**
+   * Moves ghosts using adaptive speed and burst passes.
+   */
+  function moveGhosts() {
+    const passes = ghostMovePasses();
+    for (let pass = 0; pass < passes; pass++) {
+      ghosts.forEach(g => {
+        g.dir = chooseGhostDirection(g);
+        moveOneTile(g, g.dir);
+        if (g.eaten && g.c === g.startC && g.r === g.startR) g.eaten = false;
+      });
+      handleCollisions();
+      if (state !== "playing" || readyTicks > 0) return;
+    }
+  }
+
+  /**
    * Consumes the pellet under the player and advances level state if needed.
    */
   function eatPellet() {
@@ -765,7 +1025,7 @@
       grid[player.r][player.c] = " ";
       score += 50;
       pelletsLeft--;
-      frightenedTicks = 70;
+      frightenedTicks = frightenedDuration();
     }
     updateHud();
     if (pelletsLeft <= 0) {
@@ -792,6 +1052,7 @@
     });
     readyTicks = READY_TICKS;
     frightenedTicks = 0;
+    survivalTicks = 0;
   }
 
   /**
@@ -809,6 +1070,7 @@
           updateHud();
           if (lives <= 0) {
             state = "gameover";
+            saveLearning();
           } else {
             resetPositionsAfterHit();
           }
@@ -831,6 +1093,7 @@
     }
 
     if (frightenedTicks > 0) frightenedTicks--;
+    survivalTicks++;
 
     const previousPlayer = { c: player.c, r: player.r, dir: player.dir };
     player.dir = choosePlayerDirection();
@@ -838,17 +1101,9 @@
     if (playerMoved) learnPlayerMove(previousPlayer);
     player.mouthOpen = !player.mouthOpen;
     eatPellet();
-
-    // Move ghosts a little slower than the player on early levels.
-    if (tickCounter % Math.max(2, 4 - Math.min(level, 2)) !== 0) {
-      ghosts.forEach(g => {
-        g.dir = chooseGhostDirection(g);
-        moveOneTile(g, g.dir);
-        if (g.eaten && g.c === g.startC && g.r === g.startR) g.eaten = false;
-      });
-    }
-
     handleCollisions();
+
+    if (state === "playing" && readyTicks <= 0) moveGhosts();
     draw();
   }
 
@@ -1026,11 +1281,14 @@
 
   restartBtn.addEventListener("click", resetGame);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
+    if (document.hidden) {
+      saveLearning();
+    } else {
       startLoop();
       draw();
     }
   });
+  window.addEventListener("beforeunload", saveLearning);
 
   resetGame();
 })();
