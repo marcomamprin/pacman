@@ -13,6 +13,7 @@
   const aiNnSamplesEl = document.getElementById("ai-nn-samples");
   const aiNnLossEl = document.getElementById("ai-nn-loss");
   const pacNnSamplesEl = document.getElementById("pac-nn-samples");
+  const pacNnOnlineEl = document.getElementById("pac-nn-online");
   const pacNnRewardEl = document.getElementById("pac-nn-reward");
   const pacNnPretrainEl = document.getElementById("pac-nn-pretrain");
   const classicAiBtn = document.getElementById("classic-ai");
@@ -52,7 +53,10 @@
   const PAC_NN_PRETRAIN_TARGET = 10000000;
   const PAC_NN_PRETRAIN_BATCH = 50000;
   const PAC_NN_PRETRAIN_CHUNK = 2000;
+  const PAC_NN_PRETRAIN_MIN_CHUNK = 300;
+  const PAC_NN_PRETRAIN_BUDGET_MS = 8;
   const PAC_NN_PRETRAIN_RATE = 0.026;
+  const ROUTE_DISTANCE_CACHE_LIMIT = 75000;
   const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
   const AI_SETTINGS_STORAGE_KEY = "mini-maze-muncher.ai-settings.v1";
   const LEARNING_SAVE_INTERVAL = 10;
@@ -137,6 +141,7 @@
   let pacmanLogWindow = { reward: 0, loss: 0, count: 0 };
   let pacmanPretrainJob = null;
   let pacmanPretrainRunId = 0;
+  let routeDistanceCache = new Map();
   let learnedMovesSinceSave = 0;
   let loopId = null;
   let tickCounter = 0;
@@ -243,11 +248,13 @@
     const samples = pacmanNetwork?.pretrainSamples || 0;
     const progress = Math.min(100, Math.floor((samples / PAC_NN_PRETRAIN_TARGET) * 100));
     const running = isPacmanPretraining();
-    pretrainPacmanBtn.disabled = !aiEnabled("pacmanNn");
+    pretrainPacmanBtn.disabled = !aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain");
     pretrainPacmanBtn.setAttribute("aria-pressed", String(running));
 
     if (!aiEnabled("pacmanNn")) {
       pretrainPacmanBtn.textContent = "Pac-Man NN Off";
+    } else if (!aiEnabled("pacmanPretrain")) {
+      pretrainPacmanBtn.textContent = "Warm Start Off";
     } else if (running) {
       pretrainPacmanBtn.textContent = `Pause ${progress}%`;
     } else if (samples >= PAC_NN_PRETRAIN_TARGET) {
@@ -267,6 +274,7 @@
     if (aiNnSamplesEl) aiNnSamplesEl.textContent = formatCount(neuralNetwork?.samples || 0);
     if (aiNnLossEl) aiNnLossEl.textContent = neuralNetwork?.rollingLoss != null ? neuralNetwork.rollingLoss.toFixed(3) : "-";
     if (pacNnSamplesEl) pacNnSamplesEl.textContent = formatCount(pacmanNetwork?.samples || 0);
+    if (pacNnOnlineEl) pacNnOnlineEl.textContent = formatCount(pacmanNetwork?.onlineSamples || 0);
     if (pacNnRewardEl) pacNnRewardEl.textContent = pacmanNetwork?.rollingReward != null ? pacmanNetwork.rollingReward.toFixed(3) : "-";
     if (pacNnPretrainEl) {
       const samples = pacmanNetwork?.pretrainSamples || 0;
@@ -328,6 +336,7 @@
       id: i,
       eaten: false
     }));
+    routeDistanceCache = new Map();
   }
 
   /**
@@ -400,6 +409,7 @@
    */
   function canMove(entity, dirName) {
     const d = DIRS[dirName];
+    if (!d) return false;
     const nr = entity.r + d.dr;
     const nc = entity.c + d.dc;
     return !isWall(nc, nr);
@@ -521,6 +531,32 @@
    */
   function tileKey(tile) {
     return `${tile.c},${tile.r}`;
+  }
+
+  /**
+   * Builds a stable key for a cached route distance.
+   *
+   * @param {{c: number, r: number}} start Starting tile.
+   * @param {{c: number, r: number}} target Target tile.
+   * @returns {string} Cache key for the tile pair.
+   */
+  function routeKey(start, target) {
+    return `${tileKey(start)}>${tileKey(target)}`;
+  }
+
+  /**
+   * Stores a route distance while keeping the cache bounded.
+   *
+   * @param {{c: number, r: number}} start Starting tile.
+   * @param {{c: number, r: number}} target Target tile.
+   * @param {number} distance Distance to cache.
+   */
+  function rememberRouteDistance(start, target, distance) {
+    while (routeDistanceCache.size > ROUTE_DISTANCE_CACHE_LIMIT - 2) {
+      routeDistanceCache.delete(routeDistanceCache.keys().next().value);
+    }
+    routeDistanceCache.set(routeKey(start, target), distance);
+    routeDistanceCache.set(routeKey(target, start), distance);
   }
 
   /**
@@ -867,7 +903,7 @@
   /**
    * Creates Pac-Man's policy network for automatic gameplay.
    *
-   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, rollingReward: number | null, rollingLoss: number | null}} Pac-Man policy network.
+   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, onlineSamples: number, pretrainSamples: number, rollingReward: number | null, rollingLoss: number | null}} Pac-Man policy network.
    */
   function createPacmanNetwork() {
     return {
@@ -880,6 +916,7 @@
       )),
       outputBiases: Array.from({ length: PAC_NN_OUTPUTS }, () => 0),
       samples: 0,
+      onlineSamples: 0,
       pretrainSamples: 0,
       rollingReward: null,
       rollingLoss: null,
@@ -891,7 +928,7 @@
    * Restores Pac-Man's policy network from persisted data.
    *
    * @param {object} stored Persisted policy network.
-   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, rollingReward: number | null, rollingLoss: number | null}} Restored policy network.
+   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, onlineSamples: number, pretrainSamples: number, rollingReward: number | null, rollingLoss: number | null}} Restored policy network.
    */
   function restorePacmanNetwork(stored) {
     const network = createPacmanNetwork();
@@ -907,6 +944,11 @@
     network.outputBiases = network.outputBiases.map((value, o) => finiteNumber(stored.outputBiases?.[o], value));
     network.samples = Math.max(0, Number(stored.samples) || 0);
     network.pretrainSamples = Math.max(0, Number(stored.pretrainSamples) || 0);
+    const storedOnlineSamples = Number(stored.onlineSamples);
+    network.onlineSamples = Math.max(
+      0,
+      Number.isFinite(storedOnlineSamples) ? storedOnlineSamples : network.samples - network.pretrainSamples
+    );
     network.rollingReward = stored.rollingReward === null ? null : finiteNumber(stored.rollingReward, null);
     network.rollingLoss = stored.rollingLoss === null ? null : finiteNumber(stored.rollingLoss, null);
     network.rollingEpsilon = finiteNumber(stored.rollingEpsilon, 1);
@@ -950,8 +992,10 @@
    * @returns {number} Epsilon exploration rate.
    */
   function pacmanExplorationRate() {
-    const samples = pacmanNetwork?.samples || 0;
-    return Math.max(0.04, 0.45 * Math.exp(-samples / 220));
+    const onlineSamples = pacmanNetwork?.onlineSamples || 0;
+    const pretrainReadiness = Math.min(1, (pacmanNetwork?.pretrainSamples || 0) / PAC_NN_PRETRAIN_TARGET);
+    const initialExploration = 0.45 - pretrainReadiness * 0.28;
+    return Math.max(0.04, initialExploration * Math.exp(-onlineSamples / 260));
   }
 
   /**
@@ -986,7 +1030,7 @@
    */
   function recordPacmanTrainingMetrics(metrics) {
     const { actionIndex, reward, loss, epsilon, beforeValues, afterValues, target } = metrics;
-    const decay = pacmanNetwork.samples <= 1 ? 0 : PAC_NN_METRIC_DECAY;
+    const decay = pacmanNetwork.onlineSamples <= 1 ? 0 : PAC_NN_METRIC_DECAY;
 
     pacmanNetwork.rollingReward = pacmanNetwork.rollingReward === null
       ? reward
@@ -1006,6 +1050,8 @@
     const averageLoss = pacmanLogWindow.loss / pacmanLogWindow.count;
     console.info("[Pac-Man Policy NN]", {
       samples: pacmanNetwork.samples,
+      onlineSamples: pacmanNetwork.onlineSamples,
+      pretrainSamples: pacmanNetwork.pretrainSamples,
       window: pacmanLogWindow.count,
       averageReward: Number(averageReward.toFixed(4)),
       rollingReward: Number(pacmanNetwork.rollingReward.toFixed(4)),
@@ -1044,7 +1090,7 @@
     const target = reward + (done ? 0 : PAC_NN_GAMMA * nextBestValue);
     const error = pass.values[actionIndex] - target;
     const loss = error ** 2;
-    const rate = PAC_NN_LEARNING_RATE / Math.sqrt(1 + pacmanNetwork.samples / 180);
+    const rate = PAC_NN_LEARNING_RATE / Math.sqrt(1 + (pacmanNetwork.onlineSamples || 0) / 180);
     const previousOutputWeights = pacmanNetwork.outputWeights.map(row => [...row]);
 
     pacmanNetwork.outputWeights[actionIndex] = pacmanNetwork.outputWeights[actionIndex].map((weight, h) => (
@@ -1058,6 +1104,7 @@
     });
 
     pacmanNetwork.samples++;
+    pacmanNetwork.onlineSamples = (pacmanNetwork.onlineSamples || 0) + 1;
     noteLearningChanged();
     recordPacmanTrainingMetrics({
       actionIndex,
@@ -1378,13 +1425,15 @@
    * Trains a bounded number of Pac-Man pretraining samples.
    *
    * @param {object} cache Pretraining cache.
-   * @param {number} iterations Number of sampled states to train.
+   * @param {number} iterations Maximum number of sampled states to train.
+   * @param {number} budgetMs Maximum wall-clock time for this slice.
    * @returns {{trained: number, loss: number, correct: number}} Training metrics.
    */
-  function trainPacmanPretrainSamples(cache, iterations) {
+  function trainPacmanPretrainSamples(cache, iterations, budgetMs = PAC_NN_PRETRAIN_BUDGET_MS) {
     let trained = 0;
     let loss = 0;
     let correct = 0;
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
 
     for (let i = 0; i < iterations; i++) {
       const sample = samplePacmanPretrainState(cache);
@@ -1399,6 +1448,11 @@
       trained++;
       loss += metrics.loss;
       if (metrics.correct) correct++;
+
+      if (trained >= PAC_NN_PRETRAIN_MIN_CHUNK) {
+        const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+        if (elapsed >= budgetMs) break;
+      }
     }
 
     return { trained, loss, correct };
@@ -1463,7 +1517,7 @@
    * @param {object} job Active pretraining job.
    */
   function schedulePacmanPretrainChunk(job) {
-    const runner = () => runPacmanPretrainChunk(job.id);
+    const runner = (deadline) => runPacmanPretrainChunk(job.id, deadline);
     if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
       window.requestIdleCallback(runner, { timeout: 90 });
     } else {
@@ -1475,8 +1529,9 @@
    * Runs one non-blocking slice of Pac-Man pretraining.
    *
    * @param {number} jobId Active job identifier.
+   * @param {{timeRemaining?: function(): number} | undefined} deadline Browser idle callback deadline.
    */
-  function runPacmanPretrainChunk(jobId) {
+  function runPacmanPretrainChunk(jobId, deadline) {
     const job = pacmanPretrainJob;
     if (!job || !job.running || job.id !== jobId) return;
 
@@ -1491,7 +1546,10 @@
       return;
     }
 
-    const metrics = trainPacmanPretrainSamples(job.cache, Math.min(PAC_NN_PRETRAIN_CHUNK, remaining));
+    const idleBudget = typeof deadline?.timeRemaining === "function"
+      ? Math.max(4, Math.min(PAC_NN_PRETRAIN_BUDGET_MS, deadline.timeRemaining()))
+      : PAC_NN_PRETRAIN_BUDGET_MS;
+    const metrics = trainPacmanPretrainSamples(job.cache, Math.min(PAC_NN_PRETRAIN_CHUNK, remaining), idleBudget);
     if (!metrics.trained) {
       finishPacmanPretraining(job, "stopped");
       return;
@@ -1523,7 +1581,7 @@
    * @param {number} targetSamples Desired cumulative pretraining sample count.
    */
   function startPacmanPretraining(targetSamples = PAC_NN_PRETRAIN_TARGET) {
-    if (!aiEnabled("pacmanNn") || !pacmanNetwork || !grid) {
+    if (!aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain") || !pacmanNetwork || !grid) {
       updateAiStats();
       return;
     }
@@ -1686,6 +1744,7 @@
    */
   function adjacentTile(tile, dirName) {
     const d = DIRS[dirName];
+    if (!d) return null;
     const nc = tile.c + d.dc;
     const nr = tile.r + d.dr;
     if (isWall(nc, nr)) return null;
@@ -1707,8 +1766,8 @@
 
     const queue = [start];
     const visited = new Set([tileKey(start)]);
-    while (queue.length) {
-      const current = queue.shift();
+    for (let i = 0; i < queue.length; i++) {
+      const current = queue[i];
       for (const dirName of DIR_NAMES) {
         const d = DIRS[dirName];
         const next = {
@@ -1724,7 +1783,7 @@
       }
     }
 
-    return { c: player.c, r: player.r };
+    return player ? { c: player.c, r: player.r } : start;
   }
 
   /**
@@ -1739,21 +1798,29 @@
     const destination = nearestOpenTile(target);
     if (tileKey(origin) === tileKey(destination)) return 0;
 
+    const cached = routeDistanceCache.get(routeKey(origin, destination));
+    if (cached != null) return cached;
+
     const queue = [{ ...origin, distance: 0 }];
     const visited = new Set([tileKey(origin)]);
-    while (queue.length) {
-      const current = queue.shift();
+    for (let i = 0; i < queue.length; i++) {
+      const current = queue[i];
       for (const dirName of DIR_NAMES) {
         const next = adjacentTile(current, dirName);
         if (!next) continue;
         const key = tileKey(next);
         if (visited.has(key)) continue;
-        if (key === tileKey(destination)) return current.distance + 1;
+        if (key === tileKey(destination)) {
+          const distance = current.distance + 1;
+          rememberRouteDistance(origin, destination, distance);
+          return distance;
+        }
         visited.add(key);
         queue.push({ ...next, distance: current.distance + 1 });
       }
     }
 
+    rememberRouteDistance(origin, destination, Infinity);
     return Infinity;
   }
 
@@ -1765,15 +1832,31 @@
    * @returns {{tile: {c: number, r: number} | null, distance: number}} Nearest matching tile and route distance.
    */
   function nearestGridTarget(origin, symbols) {
-    let best = { tile: null, distance: Infinity };
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        if (!symbols.includes(grid[r][c])) continue;
-        const distance = routeDistance(origin, { c, r });
-        if (distance < best.distance) best = { tile: { c, r }, distance };
+    const wanted = new Set(symbols);
+    const start = nearestOpenTile(origin);
+    if (wanted.has(grid[start.r]?.[start.c])) return { tile: { ...start }, distance: 0 };
+
+    const queue = [{ ...start, distance: 0 }];
+    const visited = new Set([tileKey(start)]);
+    for (let i = 0; i < queue.length; i++) {
+      const current = queue[i];
+      for (const dirName of DIR_NAMES) {
+        const next = adjacentTile(current, dirName);
+        if (!next) continue;
+        const key = tileKey(next);
+        if (visited.has(key)) continue;
+
+        const distance = current.distance + 1;
+        if (wanted.has(grid[next.r]?.[next.c])) {
+          return { tile: next, distance };
+        }
+
+        visited.add(key);
+        queue.push({ ...next, distance });
       }
     }
-    return best;
+
+    return { tile: null, distance: Infinity };
   }
 
   /**
@@ -1793,12 +1876,13 @@
    * Encodes one ghost as Pac-Man policy features.
    *
    * @param {{c: number, r: number, eaten: boolean} | null} ghost Ghost to encode.
+   * @param {number | null} knownDistance Previously measured route distance.
    * @returns {number[]} Fixed-size ghost feature vector.
    */
-  function pacmanGhostVector(ghost) {
+  function pacmanGhostVector(ghost, knownDistance = null) {
     if (!ghost) return [0, 0, 1, 0, 0];
 
-    const distance = routeDistance(player, ghost);
+    const distance = knownDistance ?? routeDistance(player, ghost);
     const edible = frightenedTicks > 0 && !ghost.eaten ? 1 : 0;
     const dangerous = frightenedTicks <= 0 && !ghost.eaten ? 1 : 0;
     return [
@@ -1817,10 +1901,10 @@
    */
   function pacmanStateVector() {
     const nearestGhosts = ghosts
-      .slice()
-      .sort((a, b) => routeDistance(player, a) - routeDistance(player, b))
+      .map(ghost => ({ ghost, distance: routeDistance(player, ghost) }))
+      .sort((a, b) => a.distance - b.distance)
       .slice(0, 4);
-    while (nearestGhosts.length < 4) nearestGhosts.push(null);
+    while (nearestGhosts.length < 4) nearestGhosts.push({ ghost: null, distance: null });
 
     const nearestPellet = nearestGridTarget(player, [".", "o"]);
     const nearestPowerPellet = nearestGridTarget(player, ["o"]);
@@ -1838,7 +1922,7 @@
       ...openDirectionVector(player),
       clamp(frightenedTicks / BASE_FRIGHTENED_TICKS, 0, 1),
       difficultyPressure() / 10,
-      ...nearestGhosts.flatMap(pacmanGhostVector),
+      ...nearestGhosts.flatMap(({ ghost, distance }) => pacmanGhostVector(ghost, distance)),
       ...pelletVector,
       ...powerVector
     ];
@@ -2264,8 +2348,9 @@
 
     const hunters = ghosts
       .filter(g => !g.eaten)
-      .sort((a, b) => routeDistance(a, player) - routeDistance(b, player));
-    const slot = Math.max(0, hunters.indexOf(ghost));
+      .map(g => ({ ghost: g, distance: routeDistance(g, player) }))
+      .sort((a, b) => a.distance - b.distance);
+    const slot = Math.max(0, hunters.findIndex(entry => entry.ghost === ghost));
     return GHOST_TACTICS[slot % GHOST_TACTICS.length];
   }
 

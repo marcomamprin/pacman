@@ -143,7 +143,7 @@ button:disabled {
 }
 
 .ai-stats div {
-  min-width: 112px;
+  min-width: 126px;
   padding: 6px 9px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
@@ -151,7 +151,11 @@ button:disabled {
 }
 
 .ai-stats strong {
+  display: block;
+  margin-top: 2px;
   color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 canvas {
