@@ -60,6 +60,11 @@ button {
 
 button:hover { filter: brightness(1.08); }
 button:active { transform: translateY(1px); }
+button:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.45) brightness(0.7);
+  opacity: 0.65;
+}
 
 .ai-lab {
   margin: 0 auto 14px;
@@ -181,7 +186,7 @@ canvas {
   }
 
   .ai-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .secondary,
