@@ -12,13 +12,13 @@
   const aiMemoryEl = document.getElementById("ai-memory");
   const aiNnSamplesEl = document.getElementById("ai-nn-samples");
   const aiNnLossEl = document.getElementById("ai-nn-loss");
-  const pacNnSamplesEl = document.getElementById("pac-nn-samples");
-  const pacNnOnlineEl = document.getElementById("pac-nn-online");
-  const pacNnRewardEl = document.getElementById("pac-nn-reward");
-  const pacNnPretrainEl = document.getElementById("pac-nn-pretrain");
+  const playerNnSamplesEl = document.getElementById("player-nn-samples");
+  const playerNnOnlineEl = document.getElementById("player-nn-online");
+  const playerNnRewardEl = document.getElementById("player-nn-reward");
+  const playerNnPretrainEl = document.getElementById("player-nn-pretrain");
   const classicAiBtn = document.getElementById("classic-ai");
   const allAiBtn = document.getElementById("all-ai");
-  const pretrainPacmanBtn = document.getElementById("pretrain-pacman");
+  const pretrainPlayerBtn = document.getElementById("pretrain-player");
   const resetAiMemoryBtn = document.getElementById("reset-ai-memory");
   const aiToggleBtns = [...document.querySelectorAll("[data-ai-toggle]")];
 
@@ -43,19 +43,19 @@
   const NN_LEARNING_RATE = 0.045;
   const NN_LOG_INTERVAL = 25;
   const NN_METRIC_DECAY = 0.94;
-  const PAC_NN_INPUTS = 36;
-  const PAC_NN_HIDDEN = 18;
-  const PAC_NN_OUTPUTS = 4;
-  const PAC_NN_LEARNING_RATE = 0.035;
-  const PAC_NN_GAMMA = 0.9;
-  const PAC_NN_LOG_INTERVAL = 25;
-  const PAC_NN_METRIC_DECAY = 0.94;
-  const PAC_NN_PRETRAIN_TARGET = 10000000;
-  const PAC_NN_PRETRAIN_BATCH = 50000;
-  const PAC_NN_PRETRAIN_CHUNK = 2000;
-  const PAC_NN_PRETRAIN_MIN_CHUNK = 300;
-  const PAC_NN_PRETRAIN_BUDGET_MS = 8;
-  const PAC_NN_PRETRAIN_RATE = 0.026;
+  const PLAYER_NN_INPUTS = 36;
+  const PLAYER_NN_HIDDEN = 18;
+  const PLAYER_NN_OUTPUTS = 4;
+  const PLAYER_NN_LEARNING_RATE = 0.035;
+  const PLAYER_NN_GAMMA = 0.9;
+  const PLAYER_NN_LOG_INTERVAL = 25;
+  const PLAYER_NN_METRIC_DECAY = 0.94;
+  const PLAYER_NN_PRETRAIN_TARGET = 10000000;
+  const PLAYER_NN_PRETRAIN_BATCH = 50000;
+  const PLAYER_NN_PRETRAIN_CHUNK = 2000;
+  const PLAYER_NN_PRETRAIN_MIN_CHUNK = 300;
+  const PLAYER_NN_PRETRAIN_BUDGET_MS = 8;
+  const PLAYER_NN_PRETRAIN_RATE = 0.026;
   const ROUTE_DISTANCE_CACHE_LIMIT = 75000;
   const LEARNING_STORAGE_KEY = "mini-maze-muncher.ghost-learning.v1";
   const AI_SETTINGS_STORAGE_KEY = "mini-maze-muncher.ai-settings.v1";
@@ -120,10 +120,10 @@
     behaviorClusters: true,
     neuralNetwork: true,
     nnLogs: true,
-    autoPacman: false,
-    pacmanNn: true,
-    pacmanPretrain: true,
-    pacmanLogs: true,
+    autoPlayer: false,
+    playerNn: true,
+    playerPretrain: true,
+    playerLogs: true,
     persistentMemory: true,
     adaptiveDifficulty: true,
     groupTactics: true,
@@ -135,12 +135,12 @@
   };
 
   let grid, score, lives, level, pelletsLeft, player, ghosts, frightenedTicks, state, readyTicks, survivalTicks;
-  let playerTrail, learnedTurns, behaviorClusters, neuralNetwork, pacmanNetwork;
+  let playerTrail, learnedTurns, behaviorClusters, neuralNetwork, playerNetwork;
   let aiSettings = { ...DEFAULT_AI_SETTINGS };
   let neuralLogWindow = { loss: 0, correct: 0, confidence: 0, count: 0 };
-  let pacmanLogWindow = { reward: 0, loss: 0, count: 0 };
-  let pacmanPretrainJob = null;
-  let pacmanPretrainRunId = 0;
+  let playerLogWindow = { reward: 0, loss: 0, count: 0 };
+  let playerPretrainJob = null;
+  let playerPretrainRunId = 0;
   let routeDistanceCache = new Map();
   let learnedMovesSinceSave = 0;
   let loopId = null;
@@ -189,7 +189,7 @@
     aiSettings[name] = value;
     saveAiSettings();
     updateAiControls();
-    updatePacmanPretrainingForSettings();
+    updatePlayerPretrainingForSettings();
     draw();
   }
 
@@ -202,20 +202,20 @@
     aiSettings = Object.fromEntries(Object.keys(DEFAULT_AI_SETTINGS).map(name => [name, value]));
     saveAiSettings();
     updateAiControls();
-    updatePacmanPretrainingForSettings();
+    updatePlayerPretrainingForSettings();
     draw();
   }
 
   /**
-   * Starts or stops Pac-Man warm-start training after AI settings change.
+   * Starts or stops Player warm-start training after AI settings change.
    */
-  function updatePacmanPretrainingForSettings() {
-    if (!aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain")) {
-      stopPacmanPretraining();
+  function updatePlayerPretrainingForSettings() {
+    if (!aiEnabled("playerNn") || !aiEnabled("playerPretrain")) {
+      stopPlayerPretraining();
       return;
     }
 
-    maybeWarmStartPacmanPolicy();
+    maybeWarmStartPlayerPolicy();
   }
 
   /**
@@ -240,27 +240,27 @@
   }
 
   /**
-   * Updates the manual Pac-Man pretraining button state.
+   * Updates the manual Player pretraining button state.
    */
   function updatePretrainButton() {
-    if (!pretrainPacmanBtn) return;
+    if (!pretrainPlayerBtn) return;
 
-    const samples = pacmanNetwork?.pretrainSamples || 0;
-    const progress = Math.min(100, Math.floor((samples / PAC_NN_PRETRAIN_TARGET) * 100));
-    const running = isPacmanPretraining();
-    pretrainPacmanBtn.disabled = !aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain");
-    pretrainPacmanBtn.setAttribute("aria-pressed", String(running));
+    const samples = playerNetwork?.pretrainSamples || 0;
+    const progress = Math.min(100, Math.floor((samples / PLAYER_NN_PRETRAIN_TARGET) * 100));
+    const running = isPlayerPretraining();
+    pretrainPlayerBtn.disabled = !aiEnabled("playerNn") || !aiEnabled("playerPretrain");
+    pretrainPlayerBtn.setAttribute("aria-pressed", String(running));
 
-    if (!aiEnabled("pacmanNn")) {
-      pretrainPacmanBtn.textContent = "Pac-Man NN Off";
-    } else if (!aiEnabled("pacmanPretrain")) {
-      pretrainPacmanBtn.textContent = "Warm Start Off";
+    if (!aiEnabled("playerNn")) {
+      pretrainPlayerBtn.textContent = "Player NN Off";
+    } else if (!aiEnabled("playerPretrain")) {
+      pretrainPlayerBtn.textContent = "Warm Start Off";
     } else if (running) {
-      pretrainPacmanBtn.textContent = `Pause ${progress}%`;
-    } else if (samples >= PAC_NN_PRETRAIN_TARGET) {
-      pretrainPacmanBtn.textContent = "Add 50k Samples";
+      pretrainPlayerBtn.textContent = `Pause ${progress}%`;
+    } else if (samples >= PLAYER_NN_PRETRAIN_TARGET) {
+      pretrainPlayerBtn.textContent = "Add 50k Samples";
     } else {
-      pretrainPacmanBtn.textContent = "Pretrain Pac-Man";
+      pretrainPlayerBtn.textContent = "Pretrain Player";
     }
   }
 
@@ -273,13 +273,13 @@
     if (aiMemoryEl) aiMemoryEl.textContent = `${learnedTurns?.size || 0}/${behaviorClusters?.length || 0}`;
     if (aiNnSamplesEl) aiNnSamplesEl.textContent = formatCount(neuralNetwork?.samples || 0);
     if (aiNnLossEl) aiNnLossEl.textContent = neuralNetwork?.rollingLoss != null ? neuralNetwork.rollingLoss.toFixed(3) : "-";
-    if (pacNnSamplesEl) pacNnSamplesEl.textContent = formatCount(pacmanNetwork?.samples || 0);
-    if (pacNnOnlineEl) pacNnOnlineEl.textContent = formatCount(pacmanNetwork?.onlineSamples || 0);
-    if (pacNnRewardEl) pacNnRewardEl.textContent = pacmanNetwork?.rollingReward != null ? pacmanNetwork.rollingReward.toFixed(3) : "-";
-    if (pacNnPretrainEl) {
-      const samples = pacmanNetwork?.pretrainSamples || 0;
-      const target = Math.max(PAC_NN_PRETRAIN_TARGET, pacmanPretrainJob?.target || 0);
-      pacNnPretrainEl.textContent = `${formatCount(samples)}/${formatCount(target)}`;
+    if (playerNnSamplesEl) playerNnSamplesEl.textContent = formatCount(playerNetwork?.samples || 0);
+    if (playerNnOnlineEl) playerNnOnlineEl.textContent = formatCount(playerNetwork?.onlineSamples || 0);
+    if (playerNnRewardEl) playerNnRewardEl.textContent = playerNetwork?.rollingReward != null ? playerNetwork.rollingReward.toFixed(3) : "-";
+    if (playerNnPretrainEl) {
+      const samples = playerNetwork?.pretrainSamples || 0;
+      const target = Math.max(PLAYER_NN_PRETRAIN_TARGET, playerPretrainJob?.target || 0);
+      playerNnPretrainEl.textContent = `${formatCount(samples)}/${formatCount(target)}`;
     }
     updatePretrainButton();
   }
@@ -288,7 +288,7 @@
    * Clears persistent and in-memory ghost learning.
    */
   function clearAiMemory() {
-    stopPacmanPretraining();
+    stopPlayerPretraining();
     try {
       localStorage.removeItem(LEARNING_STORAGE_KEY);
     } catch {
@@ -343,7 +343,7 @@
    * Resets score, lives, level state, actors, and starts a fresh game loop.
    */
   function resetGame() {
-    stopPacmanPretraining();
+    stopPlayerPretraining();
     score = 0;
     lives = 3;
     level = 1;
@@ -359,7 +359,7 @@
       resetLearning();
     }
     parseMaze();
-    maybeWarmStartPacmanPolicy();
+    maybeWarmStartPlayerPolicy();
     updateHud();
     draw();
     startLoop();
@@ -449,9 +449,9 @@
     learnedTurns = new Map();
     behaviorClusters = [];
     neuralNetwork = createNeuralNetwork();
-    pacmanNetwork = createPacmanNetwork();
+    playerNetwork = createPlayerNetwork();
     neuralLogWindow = { loss: 0, correct: 0, confidence: 0, count: 0 };
-    pacmanLogWindow = { reward: 0, loss: 0, count: 0 };
+    playerLogWindow = { reward: 0, loss: 0, count: 0 };
     learnedMovesSinceSave = 0;
   }
 
@@ -490,7 +490,7 @@
           samples: Number(cluster.samples) || 1
         }));
       neuralNetwork = restoreNeuralNetwork(stored.neuralNetwork);
-      pacmanNetwork = restorePacmanNetwork(stored.pacmanNetwork);
+      playerNetwork = restorePlayerNetwork(stored.playerNetwork);
     } catch {
       resetLearning();
     }
@@ -507,7 +507,7 @@
         learnedTurns: [...learnedTurns.entries()],
         behaviorClusters,
         neuralNetwork,
-        pacmanNetwork
+        playerNetwork
       }));
       learnedMovesSinceSave = 0;
     } catch {
@@ -668,10 +668,10 @@
   }
 
   /**
-   * Builds an unsupervised learning vector for Pac-Man's current context.
+   * Builds an unsupervised learning vector for Player's current context.
    *
    * @param {{c: number, r: number, dir: string}} tile Tile and travel direction.
-   * @param {string} intendedDir Direction Pac-Man is currently trying to take.
+   * @param {string} intendedDir Direction Player is currently trying to take.
    * @returns {number[]} Numeric behavior features for clustering.
    */
   function playerContextVector(tile, intendedDir) {
@@ -842,7 +842,7 @@
     const averageLoss = neuralLogWindow.loss / neuralLogWindow.count;
     const averageAccuracy = neuralLogWindow.correct / neuralLogWindow.count;
     const averageConfidence = neuralLogWindow.confidence / neuralLogWindow.count;
-    console.info("[Pac-Man NN]", {
+    console.info("[Player NN]", {
       samples: neuralNetwork.samples,
       window: neuralLogWindow.count,
       averageLoss: Number(averageLoss.toFixed(4)),
@@ -866,7 +866,7 @@
    * Trains the neural network from one observed player movement.
    *
    * @param {number[]} vector Movement-context features before the move.
-   * @param {string} outcomeDir Direction Pac-Man actually chose.
+   * @param {string} outcomeDir Direction Player actually chose.
    */
   function trainNeuralNetwork(vector, outcomeDir) {
     const targetIndex = DIR_NAMES.indexOf(outcomeDir);
@@ -901,20 +901,20 @@
   }
 
   /**
-   * Creates Pac-Man's policy network for automatic gameplay.
+   * Creates Player's policy network for automatic gameplay.
    *
-   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, onlineSamples: number, pretrainSamples: number, rollingReward: number | null, rollingLoss: number | null}} Pac-Man policy network.
+   * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, onlineSamples: number, pretrainSamples: number, rollingReward: number | null, rollingLoss: number | null}} Player policy network.
    */
-  function createPacmanNetwork() {
+  function createPlayerNetwork() {
     return {
-      inputWeights: Array.from({ length: PAC_NN_HIDDEN }, () => (
-        Array.from({ length: PAC_NN_INPUTS }, () => (Math.random() * 2 - 1) * 0.28)
+      inputWeights: Array.from({ length: PLAYER_NN_HIDDEN }, () => (
+        Array.from({ length: PLAYER_NN_INPUTS }, () => (Math.random() * 2 - 1) * 0.28)
       )),
-      hiddenBiases: Array.from({ length: PAC_NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.08),
-      outputWeights: Array.from({ length: PAC_NN_OUTPUTS }, () => (
-        Array.from({ length: PAC_NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.28)
+      hiddenBiases: Array.from({ length: PLAYER_NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.08),
+      outputWeights: Array.from({ length: PLAYER_NN_OUTPUTS }, () => (
+        Array.from({ length: PLAYER_NN_HIDDEN }, () => (Math.random() * 2 - 1) * 0.28)
       )),
-      outputBiases: Array.from({ length: PAC_NN_OUTPUTS }, () => 0),
+      outputBiases: Array.from({ length: PLAYER_NN_OUTPUTS }, () => 0),
       samples: 0,
       onlineSamples: 0,
       pretrainSamples: 0,
@@ -925,13 +925,13 @@
   }
 
   /**
-   * Restores Pac-Man's policy network from persisted data.
+   * Restores Player's policy network from persisted data.
    *
    * @param {object} stored Persisted policy network.
    * @returns {{inputWeights: number[][], hiddenBiases: number[], outputWeights: number[][], outputBiases: number[], samples: number, onlineSamples: number, pretrainSamples: number, rollingReward: number | null, rollingLoss: number | null}} Restored policy network.
    */
-  function restorePacmanNetwork(stored) {
-    const network = createPacmanNetwork();
+  function restorePlayerNetwork(stored) {
+    const network = createPlayerNetwork();
     if (!stored) return network;
 
     network.inputWeights = network.inputWeights.map((row, h) => (
@@ -956,44 +956,44 @@
   }
 
   /**
-   * Pads or trims a feature vector for Pac-Man's policy network.
+   * Pads or trims a feature vector for Player's policy network.
    *
    * @param {number[]} vector Source feature vector.
    * @returns {number[]} Fixed-size policy-network input.
    */
-  function pacmanInputVector(vector) {
-    return Array.from({ length: PAC_NN_INPUTS }, (_, i) => Number(vector[i]) || 0);
+  function playerInputVector(vector) {
+    return Array.from({ length: PLAYER_NN_INPUTS }, (_, i) => Number(vector[i]) || 0);
   }
 
   /**
-   * Runs Pac-Man's policy network and returns Q-values for directions.
+   * Runs Player's policy network and returns Q-values for directions.
    *
    * @param {number[]} vector Gameplay-state features.
    * @returns {{input: number[], hidden: number[], values: number[]} | null} Policy forward pass.
    */
-  function pacmanForward(vector) {
-    if (!pacmanNetwork) return null;
+  function playerForward(vector) {
+    if (!playerNetwork) return null;
 
-    const input = pacmanInputVector(vector);
-    const hidden = pacmanNetwork.inputWeights.map((weights, h) => {
-      const sum = weights.reduce((total, weight, i) => total + weight * input[i], pacmanNetwork.hiddenBiases[h]);
+    const input = playerInputVector(vector);
+    const hidden = playerNetwork.inputWeights.map((weights, h) => {
+      const sum = weights.reduce((total, weight, i) => total + weight * input[i], playerNetwork.hiddenBiases[h]);
       return Math.tanh(sum);
     });
-    const values = pacmanNetwork.outputWeights.map((weights, o) => (
-      weights.reduce((total, weight, h) => total + weight * hidden[h], pacmanNetwork.outputBiases[o])
+    const values = playerNetwork.outputWeights.map((weights, o) => (
+      weights.reduce((total, weight, h) => total + weight * hidden[h], playerNetwork.outputBiases[o])
     ));
 
     return { input, hidden, values };
   }
 
   /**
-   * Chooses Pac-Man's exploration rate for automatic play.
+   * Chooses Player's exploration rate for automatic play.
    *
    * @returns {number} Epsilon exploration rate.
    */
-  function pacmanExplorationRate() {
-    const onlineSamples = pacmanNetwork?.onlineSamples || 0;
-    const pretrainReadiness = Math.min(1, (pacmanNetwork?.pretrainSamples || 0) / PAC_NN_PRETRAIN_TARGET);
+  function playerExplorationRate() {
+    const onlineSamples = playerNetwork?.onlineSamples || 0;
+    const pretrainReadiness = Math.min(1, (playerNetwork?.pretrainSamples || 0) / PLAYER_NN_PRETRAIN_TARGET);
     const initialExploration = 0.45 - pretrainReadiness * 0.28;
     return Math.max(0.04, initialExploration * Math.exp(-onlineSamples / 260));
   }
@@ -1024,39 +1024,39 @@
   }
 
   /**
-   * Records Pac-Man policy training metrics and emits periodic console logs.
+   * Records Player policy training metrics and emits periodic console logs.
    *
    * @param {object} metrics Latest training metrics.
    */
-  function recordPacmanTrainingMetrics(metrics) {
+  function recordPlayerTrainingMetrics(metrics) {
     const { actionIndex, reward, loss, epsilon, beforeValues, afterValues, target } = metrics;
-    const decay = pacmanNetwork.onlineSamples <= 1 ? 0 : PAC_NN_METRIC_DECAY;
+    const decay = playerNetwork.onlineSamples <= 1 ? 0 : PLAYER_NN_METRIC_DECAY;
 
-    pacmanNetwork.rollingReward = pacmanNetwork.rollingReward === null
+    playerNetwork.rollingReward = playerNetwork.rollingReward === null
       ? reward
-      : pacmanNetwork.rollingReward * decay + reward * (1 - decay);
-    pacmanNetwork.rollingLoss = pacmanNetwork.rollingLoss === null
+      : playerNetwork.rollingReward * decay + reward * (1 - decay);
+    playerNetwork.rollingLoss = playerNetwork.rollingLoss === null
       ? loss
-      : pacmanNetwork.rollingLoss * decay + loss * (1 - decay);
-    pacmanNetwork.rollingEpsilon = epsilon;
+      : playerNetwork.rollingLoss * decay + loss * (1 - decay);
+    playerNetwork.rollingEpsilon = epsilon;
 
-    pacmanLogWindow.reward += reward;
-    pacmanLogWindow.loss += loss;
-    pacmanLogWindow.count++;
+    playerLogWindow.reward += reward;
+    playerLogWindow.loss += loss;
+    playerLogWindow.count++;
 
-    if (!aiEnabled("pacmanLogs") || pacmanLogWindow.count < PAC_NN_LOG_INTERVAL) return;
+    if (!aiEnabled("playerLogs") || playerLogWindow.count < PLAYER_NN_LOG_INTERVAL) return;
 
-    const averageReward = pacmanLogWindow.reward / pacmanLogWindow.count;
-    const averageLoss = pacmanLogWindow.loss / pacmanLogWindow.count;
-    console.info("[Pac-Man Policy NN]", {
-      samples: pacmanNetwork.samples,
-      onlineSamples: pacmanNetwork.onlineSamples,
-      pretrainSamples: pacmanNetwork.pretrainSamples,
-      window: pacmanLogWindow.count,
+    const averageReward = playerLogWindow.reward / playerLogWindow.count;
+    const averageLoss = playerLogWindow.loss / playerLogWindow.count;
+    console.info("[Player Policy NN]", {
+      samples: playerNetwork.samples,
+      onlineSamples: playerNetwork.onlineSamples,
+      pretrainSamples: playerNetwork.pretrainSamples,
+      window: playerLogWindow.count,
       averageReward: Number(averageReward.toFixed(4)),
-      rollingReward: Number(pacmanNetwork.rollingReward.toFixed(4)),
+      rollingReward: Number(playerNetwork.rollingReward.toFixed(4)),
       averageLoss: Number(averageLoss.toFixed(4)),
-      rollingLoss: Number(pacmanNetwork.rollingLoss.toFixed(4)),
+      rollingLoss: Number(playerNetwork.rollingLoss.toFixed(4)),
       epsilon: Number(epsilon.toFixed(3)),
       action: DIR_NAMES[actionIndex],
       target: Number(target.toFixed(3)),
@@ -1065,54 +1065,54 @@
       pressure: difficultyPressure(),
       nearestGhost: Number(nearestActiveGhostDistance(player).toFixed(2))
     });
-    pacmanLogWindow = { reward: 0, loss: 0, count: 0 };
+    playerLogWindow = { reward: 0, loss: 0, count: 0 };
   }
 
   /**
-   * Trains Pac-Man's policy network with one Q-learning update.
+   * Trains Player's policy network with one Q-learning update.
    *
    * @param {number[]} vector State before the action.
-   * @param {string} actionDir Direction Pac-Man chose.
+   * @param {string} actionDir Direction Player chose.
    * @param {number} reward Reward received after the action.
    * @param {number[]} nextVector State after the action.
    * @param {boolean} done True if the action ended the run.
    */
-  function trainPacmanNetwork(vector, actionDir, reward, nextVector, done) {
+  function trainPlayerNetwork(vector, actionDir, reward, nextVector, done) {
     const actionIndex = DIR_NAMES.indexOf(actionDir);
-    const pass = pacmanForward(vector);
-    const nextPass = pacmanForward(nextVector);
+    const pass = playerForward(vector);
+    const nextPass = playerForward(nextVector);
     if (!pass || !nextPass || actionIndex < 0) return;
 
     const validNextIndexes = validDirs(player).map(dirName => DIR_NAMES.indexOf(dirName));
     const nextBestValue = validNextIndexes.length
       ? Math.max(...validNextIndexes.map(i => nextPass.values[i]))
       : Math.max(...nextPass.values);
-    const target = reward + (done ? 0 : PAC_NN_GAMMA * nextBestValue);
+    const target = reward + (done ? 0 : PLAYER_NN_GAMMA * nextBestValue);
     const error = pass.values[actionIndex] - target;
     const loss = error ** 2;
-    const rate = PAC_NN_LEARNING_RATE / Math.sqrt(1 + (pacmanNetwork.onlineSamples || 0) / 180);
-    const previousOutputWeights = pacmanNetwork.outputWeights.map(row => [...row]);
+    const rate = PLAYER_NN_LEARNING_RATE / Math.sqrt(1 + (playerNetwork.onlineSamples || 0) / 180);
+    const previousOutputWeights = playerNetwork.outputWeights.map(row => [...row]);
 
-    pacmanNetwork.outputWeights[actionIndex] = pacmanNetwork.outputWeights[actionIndex].map((weight, h) => (
+    playerNetwork.outputWeights[actionIndex] = playerNetwork.outputWeights[actionIndex].map((weight, h) => (
       weight - rate * error * pass.hidden[h]
     ));
-    pacmanNetwork.outputBiases[actionIndex] -= rate * error;
-    pacmanNetwork.inputWeights = pacmanNetwork.inputWeights.map((weights, h) => {
+    playerNetwork.outputBiases[actionIndex] -= rate * error;
+    playerNetwork.inputWeights = playerNetwork.inputWeights.map((weights, h) => {
       const hiddenError = (1 - pass.hidden[h] ** 2) * previousOutputWeights[actionIndex][h] * error;
-      pacmanNetwork.hiddenBiases[h] -= rate * hiddenError;
+      playerNetwork.hiddenBiases[h] -= rate * hiddenError;
       return weights.map((weight, i) => weight - rate * hiddenError * pass.input[i]);
     });
 
-    pacmanNetwork.samples++;
-    pacmanNetwork.onlineSamples = (pacmanNetwork.onlineSamples || 0) + 1;
+    playerNetwork.samples++;
+    playerNetwork.onlineSamples = (playerNetwork.onlineSamples || 0) + 1;
     noteLearningChanged();
-    recordPacmanTrainingMetrics({
+    recordPlayerTrainingMetrics({
       actionIndex,
       reward,
       loss,
-      epsilon: pacmanExplorationRate(),
+      epsilon: playerExplorationRate(),
       beforeValues: pass.values,
-      afterValues: pacmanForward(vector)?.values || pass.values,
+      afterValues: playerForward(vector)?.values || pass.values,
       target
     });
   }
@@ -1190,11 +1190,11 @@
   }
 
   /**
-   * Builds cached maze facts used by high-volume Pac-Man pretraining.
+   * Builds cached maze facts used by high-volume Player pretraining.
    *
    * @returns {{tiles: object[], pellets: object[], powers: object[], dataByKey: Map<string, object>}} Pretraining cache.
    */
-  function buildPacmanPretrainCache() {
+  function buildPlayerPretrainCache() {
     const tiles = walkableTiles();
     const pellets = [];
     const powers = [];
@@ -1231,7 +1231,7 @@
    * @param {{c: number, r: number}} tile Tile to read.
    * @returns {object | null} Cached tile data.
    */
-  function pacmanPretrainData(cache, tile) {
+  function playerPretrainData(cache, tile) {
     return cache?.dataByKey?.get(tileKey(tile)) || null;
   }
 
@@ -1254,16 +1254,16 @@
   }
 
   /**
-   * Encodes a sampled Pac-Man state for policy pretraining.
+   * Encodes a sampled Player state for policy pretraining.
    *
-   * @param {{c: number, r: number, dir: string}} samplePlayer Sampled Pac-Man.
+   * @param {{c: number, r: number, dir: string}} samplePlayer Sampled Player.
    * @param {{c: number, r: number}[]} sampleGhosts Sampled ghosts.
    * @param {number} frightened Sampled frightened flag.
    * @param {number} pressure Sampled difficulty pressure.
    * @param {object | null} data Cached tile data.
    * @returns {number[]} Policy feature vector.
    */
-  function pacmanPretrainFeatureVector(samplePlayer, sampleGhosts, frightened, pressure, data) {
+  function playerPretrainFeatureVector(samplePlayer, sampleGhosts, frightened, pressure, data) {
     const nearestPellet = data?.nearestPellet || nearestApproxGridTarget(samplePlayer, [".", "o"]);
     const nearestPowerPellet = data?.nearestPowerPellet || nearestApproxGridTarget(samplePlayer, ["o"]);
     const pelletVector = nearestPellet.tile
@@ -1287,9 +1287,9 @@
   }
 
   /**
-   * Encodes a sampled ghost for Pac-Man policy pretraining.
+   * Encodes a sampled ghost for Player policy pretraining.
    *
-   * @param {{c: number, r: number}} samplePlayer Sampled Pac-Man tile.
+   * @param {{c: number, r: number}} samplePlayer Sampled Player tile.
    * @param {{c: number, r: number} | null} ghost Sampled ghost tile.
    * @param {number} frightened Sampled frightened state.
    * @returns {number[]} Fixed-size ghost feature vector.
@@ -1308,14 +1308,14 @@
   }
 
   /**
-   * Builds one randomized Pac-Man policy pretraining state.
+   * Builds one randomized Player policy pretraining state.
    *
    * @param {object} cache Pretraining cache.
    * @returns {{player: {c: number, r: number, dir: string}, data: object | null, ghosts: {c: number, r: number}[], frightened: number, pressure: number, vector: number[]}} Sampled state.
    */
-  function samplePacmanPretrainState(cache) {
+  function samplePlayerPretrainState(cache) {
     const samplePlayer = { ...randomItem(cache.tiles), dir: randomItem(DIR_NAMES) };
-    const data = pacmanPretrainData(cache, samplePlayer);
+    const data = playerPretrainData(cache, samplePlayer);
     const frightened = Math.random() < 0.18 ? 1 : 0;
     const pressure = Math.random();
     const sampleGhosts = Array.from({ length: 4 }, (_, i) => {
@@ -1333,23 +1333,23 @@
       ghosts: sampleGhosts,
       frightened,
       pressure,
-      vector: pacmanPretrainFeatureVector(samplePlayer, sampleGhosts, frightened, pressure, data)
+      vector: playerPretrainFeatureVector(samplePlayer, sampleGhosts, frightened, pressure, data)
     };
   }
 
   /**
-   * Scores a sampled Pac-Man action for supervised warm-start training.
+   * Scores a sampled Player action for supervised warm-start training.
    *
    * @param {object} sample Sampled pretraining state.
    * @param {string} dirName Direction to evaluate.
    * @param {object} cache Pretraining cache.
    * @returns {number} Expert heuristic score.
    */
-  function pacmanPretrainScore(sample, dirName, cache) {
+  function playerPretrainScore(sample, dirName, cache) {
     const next = sample.data?.nextByDir?.[dirName] || adjacentTile(sample.player, dirName);
     if (!next) return -999;
 
-    const nextData = pacmanPretrainData(cache, next);
+    const nextData = playerPretrainData(cache, next);
     const ch = nextData?.ch ?? grid[next.r]?.[next.c];
     const ghostDistances = sample.ghosts
       .map(ghost => manhattanDistance(next, ghost))
@@ -1384,15 +1384,15 @@
   }
 
   /**
-   * Trains Pac-Man policy with one expert action.
+   * Trains Player policy with one expert action.
    *
    * @param {number[]} vector Sampled gameplay state.
    * @param {string[]} validDirsForState Directions available in the sampled state.
    * @param {string} targetDir Expert direction.
    * @returns {{loss: number, correct: boolean} | null} Training metrics.
    */
-  function trainPacmanWarmStart(vector, validDirsForState, targetDir) {
-    const pass = pacmanForward(vector);
+  function trainPlayerWarmStart(vector, validDirsForState, targetDir) {
+    const pass = playerForward(vector);
     const targetIndex = DIR_NAMES.indexOf(targetDir);
     if (!pass || targetIndex < 0) return null;
 
@@ -1404,52 +1404,52 @@
       .sort((a, b) => b.value - a.value)[0]?.dirName;
     const outputErrors = pass.values.map((value, i) => value - targets[i]);
     const loss = outputErrors.reduce((sum, error) => sum + error ** 2, 0) / outputErrors.length;
-    const previousOutputWeights = pacmanNetwork.outputWeights.map(row => [...row]);
+    const previousOutputWeights = playerNetwork.outputWeights.map(row => [...row]);
 
-    pacmanNetwork.outputWeights = pacmanNetwork.outputWeights.map((weights, o) => (
-      weights.map((weight, h) => weight - PAC_NN_PRETRAIN_RATE * outputErrors[o] * pass.hidden[h])
+    playerNetwork.outputWeights = playerNetwork.outputWeights.map((weights, o) => (
+      weights.map((weight, h) => weight - PLAYER_NN_PRETRAIN_RATE * outputErrors[o] * pass.hidden[h])
     ));
-    pacmanNetwork.outputBiases = pacmanNetwork.outputBiases.map((bias, o) => bias - PAC_NN_PRETRAIN_RATE * outputErrors[o]);
-    pacmanNetwork.inputWeights = pacmanNetwork.inputWeights.map((weights, h) => {
+    playerNetwork.outputBiases = playerNetwork.outputBiases.map((bias, o) => bias - PLAYER_NN_PRETRAIN_RATE * outputErrors[o]);
+    playerNetwork.inputWeights = playerNetwork.inputWeights.map((weights, h) => {
       const hiddenError = (1 - pass.hidden[h] ** 2)
         * outputErrors.reduce((sum, error, o) => sum + previousOutputWeights[o][h] * error, 0);
-      pacmanNetwork.hiddenBiases[h] -= PAC_NN_PRETRAIN_RATE * hiddenError;
-      return weights.map((weight, i) => weight - PAC_NN_PRETRAIN_RATE * hiddenError * pass.input[i]);
+      playerNetwork.hiddenBiases[h] -= PLAYER_NN_PRETRAIN_RATE * hiddenError;
+      return weights.map((weight, i) => weight - PLAYER_NN_PRETRAIN_RATE * hiddenError * pass.input[i]);
     });
-    pacmanNetwork.samples++;
-    pacmanNetwork.pretrainSamples++;
+    playerNetwork.samples++;
+    playerNetwork.pretrainSamples++;
     return { loss, correct: prediction === targetDir };
   }
 
   /**
-   * Trains a bounded number of Pac-Man pretraining samples.
+   * Trains a bounded number of Player pretraining samples.
    *
    * @param {object} cache Pretraining cache.
    * @param {number} iterations Maximum number of sampled states to train.
    * @param {number} budgetMs Maximum wall-clock time for this slice.
    * @returns {{trained: number, loss: number, correct: number}} Training metrics.
    */
-  function trainPacmanPretrainSamples(cache, iterations, budgetMs = PAC_NN_PRETRAIN_BUDGET_MS) {
+  function trainPlayerPretrainSamples(cache, iterations, budgetMs = PLAYER_NN_PRETRAIN_BUDGET_MS) {
     let trained = 0;
     let loss = 0;
     let correct = 0;
     const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
 
     for (let i = 0; i < iterations; i++) {
-      const sample = samplePacmanPretrainState(cache);
+      const sample = samplePlayerPretrainState(cache);
       const valid = sample.data?.valid || validDirs(sample.player);
       if (!valid.length) continue;
 
       const best = valid
-        .map(dirName => ({ dirName, score: pacmanPretrainScore(sample, dirName, cache) }))
+        .map(dirName => ({ dirName, score: playerPretrainScore(sample, dirName, cache) }))
         .sort((a, b) => b.score - a.score)[0].dirName;
-      const metrics = trainPacmanWarmStart(sample.vector, valid, best);
+      const metrics = trainPlayerWarmStart(sample.vector, valid, best);
       if (!metrics) continue;
       trained++;
       loss += metrics.loss;
       if (metrics.correct) correct++;
 
-      if (trained >= PAC_NN_PRETRAIN_MIN_CHUNK) {
+      if (trained >= PLAYER_NN_PRETRAIN_MIN_CHUNK) {
         const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
         if (elapsed >= budgetMs) break;
       }
@@ -1459,26 +1459,26 @@
   }
 
   /**
-   * Checks whether Pac-Man pretraining is currently running.
+   * Checks whether Player pretraining is currently running.
    *
    * @returns {boolean} True when a pretraining job is active.
    */
-  function isPacmanPretraining() {
-    return Boolean(pacmanPretrainJob?.running);
+  function isPlayerPretraining() {
+    return Boolean(playerPretrainJob?.running);
   }
 
   /**
-   * Logs one window of Pac-Man pretraining convergence metrics.
+   * Logs one window of Player pretraining convergence metrics.
    *
    * @param {object} job Active pretraining job.
    * @param {string} status Current job status.
    */
-  function logPacmanPretrainProgress(job, status) {
-    if (!aiEnabled("pacmanLogs") || !job.trainedSinceLog) return;
+  function logPlayerPretrainProgress(job, status) {
+    if (!aiEnabled("playerLogs") || !job.trainedSinceLog) return;
 
-    const samples = pacmanNetwork?.pretrainSamples || 0;
+    const samples = playerNetwork?.pretrainSamples || 0;
     const elapsedMs = (typeof performance !== "undefined" ? performance.now() : Date.now()) - job.startedAt;
-    console.info("[Pac-Man Pretrain]", {
+    console.info("[Player Pretrain]", {
       status,
       samples,
       target: job.target,
@@ -1486,7 +1486,7 @@
       window: job.trainedSinceLog,
       accuracy: Number((job.correctSinceLog / job.trainedSinceLog).toFixed(3)),
       averageLoss: Number((job.lossSinceLog / job.trainedSinceLog).toFixed(4)),
-      totalPolicySamples: pacmanNetwork?.samples || 0,
+      totalPolicySamples: playerNetwork?.samples || 0,
       elapsedSeconds: Number((elapsedMs / 1000).toFixed(1))
     });
 
@@ -1496,18 +1496,18 @@
   }
 
   /**
-   * Finishes the active Pac-Man pretraining job.
+   * Finishes the active Player pretraining job.
    *
    * @param {object} job Active pretraining job.
    * @param {string} status Final status label.
    */
-  function finishPacmanPretraining(job, status) {
-    if (!job || pacmanPretrainJob?.id !== job.id) return;
+  function finishPlayerPretraining(job, status) {
+    if (!job || playerPretrainJob?.id !== job.id) return;
 
     job.running = false;
-    logPacmanPretrainProgress(job, status);
+    logPlayerPretrainProgress(job, status);
     saveLearning();
-    pacmanPretrainJob = null;
+    playerPretrainJob = null;
     updateAiStats();
   }
 
@@ -1516,8 +1516,8 @@
    *
    * @param {object} job Active pretraining job.
    */
-  function schedulePacmanPretrainChunk(job) {
-    const runner = (deadline) => runPacmanPretrainChunk(job.id, deadline);
+  function schedulePlayerPretrainChunk(job) {
+    const runner = (deadline) => runPlayerPretrainChunk(job.id, deadline);
     if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
       window.requestIdleCallback(runner, { timeout: 90 });
     } else {
@@ -1526,32 +1526,32 @@
   }
 
   /**
-   * Runs one non-blocking slice of Pac-Man pretraining.
+   * Runs one non-blocking slice of Player pretraining.
    *
    * @param {number} jobId Active job identifier.
    * @param {{timeRemaining?: function(): number} | undefined} deadline Browser idle callback deadline.
    */
-  function runPacmanPretrainChunk(jobId, deadline) {
-    const job = pacmanPretrainJob;
+  function runPlayerPretrainChunk(jobId, deadline) {
+    const job = playerPretrainJob;
     if (!job || !job.running || job.id !== jobId) return;
 
-    if (!aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain") || !pacmanNetwork || !grid) {
-      stopPacmanPretraining();
+    if (!aiEnabled("playerNn") || !aiEnabled("playerPretrain") || !playerNetwork || !grid) {
+      stopPlayerPretraining();
       return;
     }
 
-    const remaining = job.target - (pacmanNetwork.pretrainSamples || 0);
+    const remaining = job.target - (playerNetwork.pretrainSamples || 0);
     if (remaining <= 0) {
-      finishPacmanPretraining(job, "complete");
+      finishPlayerPretraining(job, "complete");
       return;
     }
 
     const idleBudget = typeof deadline?.timeRemaining === "function"
-      ? Math.max(4, Math.min(PAC_NN_PRETRAIN_BUDGET_MS, deadline.timeRemaining()))
-      : PAC_NN_PRETRAIN_BUDGET_MS;
-    const metrics = trainPacmanPretrainSamples(job.cache, Math.min(PAC_NN_PRETRAIN_CHUNK, remaining), idleBudget);
+      ? Math.max(4, Math.min(PLAYER_NN_PRETRAIN_BUDGET_MS, deadline.timeRemaining()))
+      : PLAYER_NN_PRETRAIN_BUDGET_MS;
+    const metrics = trainPlayerPretrainSamples(job.cache, Math.min(PLAYER_NN_PRETRAIN_CHUNK, remaining), idleBudget);
     if (!metrics.trained) {
-      finishPacmanPretraining(job, "stopped");
+      finishPlayerPretraining(job, "stopped");
       return;
     }
 
@@ -1560,105 +1560,105 @@
     job.correctSinceLog += metrics.correct;
     learnedMovesSinceSave += metrics.trained;
 
-    if (learnedMovesSinceSave >= PAC_NN_PRETRAIN_BATCH) saveLearning();
+    if (learnedMovesSinceSave >= PLAYER_NN_PRETRAIN_BATCH) saveLearning();
 
-    if ((pacmanNetwork.pretrainSamples || 0) >= job.target) {
-      finishPacmanPretraining(job, "complete");
+    if ((playerNetwork.pretrainSamples || 0) >= job.target) {
+      finishPlayerPretraining(job, "complete");
       return;
     }
 
-    if (job.trainedSinceLog >= PAC_NN_PRETRAIN_BATCH) {
-      logPacmanPretrainProgress(job, "training");
+    if (job.trainedSinceLog >= PLAYER_NN_PRETRAIN_BATCH) {
+      logPlayerPretrainProgress(job, "training");
     }
 
     updateAiStats();
-    schedulePacmanPretrainChunk(job);
+    schedulePlayerPretrainChunk(job);
   }
 
   /**
-   * Starts or extends non-blocking Pac-Man pretraining.
+   * Starts or extends non-blocking Player pretraining.
    *
    * @param {number} targetSamples Desired cumulative pretraining sample count.
    */
-  function startPacmanPretraining(targetSamples = PAC_NN_PRETRAIN_TARGET) {
-    if (!aiEnabled("pacmanNn") || !aiEnabled("pacmanPretrain") || !pacmanNetwork || !grid) {
+  function startPlayerPretraining(targetSamples = PLAYER_NN_PRETRAIN_TARGET) {
+    if (!aiEnabled("playerNn") || !aiEnabled("playerPretrain") || !playerNetwork || !grid) {
       updateAiStats();
       return;
     }
 
-    const current = pacmanNetwork.pretrainSamples || 0;
+    const current = playerNetwork.pretrainSamples || 0;
     const target = Math.max(current, Math.floor(targetSamples));
     if (current >= target) {
       updateAiStats();
       return;
     }
 
-    if (pacmanPretrainJob?.running) {
-      pacmanPretrainJob.target = Math.max(pacmanPretrainJob.target, target);
+    if (playerPretrainJob?.running) {
+      playerPretrainJob.target = Math.max(playerPretrainJob.target, target);
       updateAiStats();
       return;
     }
 
-    pacmanPretrainJob = {
-      id: ++pacmanPretrainRunId,
+    playerPretrainJob = {
+      id: ++playerPretrainRunId,
       running: true,
       target,
-      cache: buildPacmanPretrainCache(),
+      cache: buildPlayerPretrainCache(),
       startedAt: typeof performance !== "undefined" ? performance.now() : Date.now(),
       trainedSinceLog: 0,
       lossSinceLog: 0,
       correctSinceLog: 0
     };
 
-    if (aiEnabled("pacmanLogs")) {
-      console.info("[Pac-Man Pretrain]", {
+    if (aiEnabled("playerLogs")) {
+      console.info("[Player Pretrain]", {
         status: "started",
         samples: current,
         target,
-        chunk: PAC_NN_PRETRAIN_CHUNK
+        chunk: PLAYER_NN_PRETRAIN_CHUNK
       });
     }
 
     updateAiStats();
-    schedulePacmanPretrainChunk(pacmanPretrainJob);
+    schedulePlayerPretrainChunk(playerPretrainJob);
   }
 
   /**
-   * Pauses active Pac-Man pretraining and saves current progress.
+   * Pauses active Player pretraining and saves current progress.
    */
-  function stopPacmanPretraining() {
-    const job = pacmanPretrainJob;
+  function stopPlayerPretraining() {
+    const job = playerPretrainJob;
     if (!job) {
       updatePretrainButton();
       return;
     }
 
     job.running = false;
-    logPacmanPretrainProgress(job, "paused");
+    logPlayerPretrainProgress(job, "paused");
     saveLearning();
-    pacmanPretrainJob = null;
+    playerPretrainJob = null;
     updateAiStats();
   }
 
   /**
-   * Queues Pac-Man policy pretraining without blocking gameplay.
+   * Queues Player policy pretraining without blocking gameplay.
    *
    * @param {number} iterations Minimum number of additional samples to request.
    */
-  function pretrainPacmanPolicy(iterations = PAC_NN_PRETRAIN_BATCH) {
-    const current = pacmanNetwork?.pretrainSamples || 0;
-    const target = Math.max(PAC_NN_PRETRAIN_TARGET, current + Math.max(0, iterations));
-    startPacmanPretraining(target);
+  function pretrainPlayerPolicy(iterations = PLAYER_NN_PRETRAIN_BATCH) {
+    const current = playerNetwork?.pretrainSamples || 0;
+    const target = Math.max(PLAYER_NN_PRETRAIN_TARGET, current + Math.max(0, iterations));
+    startPlayerPretraining(target);
   }
 
   /**
    * Runs automatic warm-start training up to the configured target.
    */
-  function maybeWarmStartPacmanPolicy() {
-    if (!aiEnabled("pacmanPretrain") || !aiEnabled("pacmanNn") || !grid) return;
+  function maybeWarmStartPlayerPolicy() {
+    if (!aiEnabled("playerPretrain") || !aiEnabled("playerNn") || !grid) return;
 
-    const remaining = PAC_NN_PRETRAIN_TARGET - (pacmanNetwork?.pretrainSamples || 0);
-    if (remaining > 0) startPacmanPretraining(PAC_NN_PRETRAIN_TARGET);
+    const remaining = PLAYER_NN_PRETRAIN_TARGET - (playerNetwork?.pretrainSamples || 0);
+    if (remaining > 0) startPlayerPretraining(PLAYER_NN_PRETRAIN_TARGET);
   }
 
   /**
@@ -1692,7 +1692,7 @@
    * Creates a new unsupervised behavior cluster.
    *
    * @param {number[]} vector Initial cluster center.
-   * @param {string} outcomeDir Direction Pac-Man chose after this context.
+   * @param {string} outcomeDir Direction Player chose after this context.
    * @returns {{center: number[], outcomes: object, weight: number, samples: number}} Cluster record.
    */
   function createBehaviorCluster(vector, outcomeDir) {
@@ -1710,7 +1710,7 @@
    * Trains the online movement clusters from one observed player context.
    *
    * @param {number[]} vector Movement-context features.
-   * @param {string} outcomeDir Direction Pac-Man chose after this context.
+   * @param {string} outcomeDir Direction Player chose after this context.
    */
   function learnBehaviorCluster(vector, outcomeDir) {
     const match = nearestBehaviorCluster(vector);
@@ -1873,13 +1873,13 @@
   }
 
   /**
-   * Encodes one ghost as Pac-Man policy features.
+   * Encodes one ghost as Player policy features.
    *
    * @param {{c: number, r: number, eaten: boolean} | null} ghost Ghost to encode.
    * @param {number | null} knownDistance Previously measured route distance.
    * @returns {number[]} Fixed-size ghost feature vector.
    */
-  function pacmanGhostVector(ghost, knownDistance = null) {
+  function playerGhostVector(ghost, knownDistance = null) {
     if (!ghost) return [0, 0, 1, 0, 0];
 
     const distance = knownDistance ?? routeDistance(player, ghost);
@@ -1895,11 +1895,11 @@
   }
 
   /**
-   * Builds Pac-Man's automatic-play state vector.
+   * Builds Player's automatic-play state vector.
    *
-   * @returns {number[]} Gameplay features for Pac-Man's policy network.
+   * @returns {number[]} Gameplay features for Player's policy network.
    */
-  function pacmanStateVector() {
+  function playerStateVector() {
     const nearestGhosts = ghosts
       .map(ghost => ({ ghost, distance: routeDistance(player, ghost) }))
       .sort((a, b) => a.distance - b.distance)
@@ -1922,19 +1922,19 @@
       ...openDirectionVector(player),
       clamp(frightenedTicks / BASE_FRIGHTENED_TICKS, 0, 1),
       difficultyPressure() / 10,
-      ...nearestGhosts.flatMap(({ ghost, distance }) => pacmanGhostVector(ghost, distance)),
+      ...nearestGhosts.flatMap(({ ghost, distance }) => playerGhostVector(ghost, distance)),
       ...pelletVector,
       ...powerVector
     ];
   }
 
   /**
-   * Scores one possible Pac-Man move with a simple safety/food heuristic.
+   * Scores one possible Player move with a simple safety/food heuristic.
    *
    * @param {string} dirName Direction to evaluate.
    * @returns {number} Heuristic action score.
    */
-  function pacmanHeuristicScore(dirName) {
+  function playerHeuristicScore(dirName) {
     const next = adjacentTile(player, dirName);
     if (!next) return -999;
 
@@ -1962,30 +1962,30 @@
   }
 
   /**
-   * Chooses Pac-Man's automatic action from the policy network and heuristic.
+   * Chooses Player's automatic action from the policy network and heuristic.
    *
    * @returns {{dir: string, vector: number[], values: number[], epsilon: number}} Chosen action details.
    */
-  function choosePacmanAutoAction() {
-    const vector = pacmanStateVector();
+  function choosePlayerAutoAction() {
+    const vector = playerStateVector();
     const valid = validDirs(player);
     const fallback = valid[0] || player.dir;
-    const pass = pacmanForward(vector);
+    const pass = playerForward(vector);
     const values = pass?.values || [0, 0, 0, 0];
-    const epsilon = aiEnabled("pacmanNn") ? pacmanExplorationRate() : 0;
+    const epsilon = aiEnabled("playerNn") ? playerExplorationRate() : 0;
 
     let dir = fallback;
-    if (aiEnabled("pacmanNn") && Math.random() < epsilon && valid.length) {
+    if (aiEnabled("playerNn") && Math.random() < epsilon && valid.length) {
       dir = valid[Math.floor(Math.random() * valid.length)];
     } else {
-      const pretrainReadiness = Math.min(1, (pacmanNetwork?.pretrainSamples || 0) / PAC_NN_PRETRAIN_TARGET);
-      const heuristicWeight = aiEnabled("pacmanNn")
+      const pretrainReadiness = Math.min(1, (playerNetwork?.pretrainSamples || 0) / PLAYER_NN_PRETRAIN_TARGET);
+      const heuristicWeight = aiEnabled("playerNn")
         ? 0.35 + (1 - pretrainReadiness) * 0.85
         : 1.4;
       dir = valid
         .map(dirName => ({
           dirName,
-          score: values[DIR_NAMES.indexOf(dirName)] + pacmanHeuristicScore(dirName) * heuristicWeight
+          score: values[DIR_NAMES.indexOf(dirName)] + playerHeuristicScore(dirName) * heuristicWeight
         }))
         .sort((a, b) => b.score - a.score)[0]?.dirName || fallback;
     }
@@ -1994,11 +1994,11 @@
   }
 
   /**
-   * Captures gameplay state for Pac-Man reward calculation.
+   * Captures gameplay state for Player reward calculation.
    *
    * @returns {object} Snapshot of key reward signals.
    */
-  function pacmanRewardSnapshot() {
+  function playerRewardSnapshot() {
     return {
       score,
       lives,
@@ -2013,14 +2013,14 @@
   }
 
   /**
-   * Computes reinforcement reward for Pac-Man's last automatic action.
+   * Computes reinforcement reward for Player's last automatic action.
    *
    * @param {object} before Snapshot before the action.
-   * @param {boolean} moved Whether Pac-Man moved successfully.
+   * @param {boolean} moved Whether Player moved successfully.
    * @returns {number} Reward signal.
    */
-  function pacmanReward(before, moved) {
-    const after = pacmanRewardSnapshot();
+  function playerReward(before, moved) {
+    const after = playerRewardSnapshot();
     let reward = 0.02;
     reward += (after.score - before.score) * 0.04;
     if (after.level > before.level) reward += 6;
@@ -2036,7 +2036,7 @@
   }
 
   /**
-   * Returns the direction Pac-Man is likely trying to travel.
+   * Returns the direction Player is likely trying to travel.
    *
    * @returns {string} Direction key from DIRS.
    */
@@ -2058,7 +2058,7 @@
   }
 
   /**
-   * Chooses how far ahead the ghosts should predict Pac-Man.
+   * Chooses how far ahead the ghosts should predict Player.
    *
    * @returns {number} Number of future tiles to simulate.
    */
@@ -2271,7 +2271,7 @@
   }
 
   /**
-   * Chooses a power pellet to deny from Pac-Man.
+   * Chooses a power pellet to deny from Player.
    *
    * @param {{c: number, r: number}} ghost Ghost choosing a guard point.
    * @returns {{c: number, r: number} | null} Guard target or null if no power pellet remains.
@@ -2289,7 +2289,7 @@
   }
 
   /**
-   * Predicts an exit point when Pac-Man is repeating a route loop.
+   * Predicts an exit point when Player is repeating a route loop.
    *
    * @returns {{c: number, r: number} | null} Intercept tile for a repeated loop.
    */
@@ -2310,7 +2310,7 @@
   }
 
   /**
-   * Chooses the opposite tunnel exit when Pac-Man is near or heading into a tunnel.
+   * Chooses the opposite tunnel exit when Player is near or heading into a tunnel.
    *
    * @returns {{c: number, r: number} | null} Tunnel cutoff target.
    */
@@ -2616,8 +2616,8 @@
     if (frightenedTicks > 0) frightenedTicks--;
     survivalTicks++;
 
-    const autoAction = aiEnabled("autoPacman") ? choosePacmanAutoAction() : null;
-    const autoRewardSnapshot = autoAction ? pacmanRewardSnapshot() : null;
+    const autoAction = aiEnabled("autoPlayer") ? choosePlayerAutoAction() : null;
+    const autoRewardSnapshot = autoAction ? playerRewardSnapshot() : null;
     if (autoAction) player.nextDir = autoAction.dir;
 
     const previousPlayer = { c: player.c, r: player.r, dir: player.dir };
@@ -2629,13 +2629,13 @@
     handleCollisions();
 
     if (state === "playing" && readyTicks <= 0) moveGhosts();
-    if (autoAction && aiEnabled("pacmanNn")) {
+    if (autoAction && aiEnabled("playerNn")) {
       const lifeLost = autoRewardSnapshot.lives > lives;
-      trainPacmanNetwork(
+      trainPlayerNetwork(
         autoAction.vector,
         autoAction.dir,
-        pacmanReward(autoRewardSnapshot, playerMoved),
-        pacmanStateVector(),
+        playerReward(autoRewardSnapshot, playerMoved),
+        playerStateVector(),
         lifeLost || state !== "playing"
       );
     }
@@ -2823,11 +2823,11 @@
   });
   classicAiBtn?.addEventListener("click", () => setAllAiSettings(false));
   allAiBtn?.addEventListener("click", () => setAllAiSettings(true));
-  pretrainPacmanBtn?.addEventListener("click", () => {
-    if (isPacmanPretraining()) {
-      stopPacmanPretraining();
+  pretrainPlayerBtn?.addEventListener("click", () => {
+    if (isPlayerPretraining()) {
+      stopPlayerPretraining();
     } else {
-      pretrainPacmanPolicy(PAC_NN_PRETRAIN_BATCH);
+      pretrainPlayerPolicy(PLAYER_NN_PRETRAIN_BATCH);
     }
     draw();
   });

@@ -22,7 +22,7 @@
         <div class="ai-actions">
           <button id="classic-ai" class="secondary" type="button">Classic</button>
           <button id="all-ai" class="secondary" type="button">All On</button>
-          <button id="pretrain-pacman" class="secondary" type="button">Pretrain Pac-Man</button>
+          <button id="pretrain-player" class="secondary" type="button">Pretrain Player</button>
           <button id="reset-ai-memory" class="secondary danger" type="button">Reset Memory</button>
         </div>
       </div>
@@ -32,10 +32,10 @@
         <button type="button" class="toggle" data-ai-toggle="behaviorClusters" aria-pressed="true">Clusters</button>
         <button type="button" class="toggle" data-ai-toggle="neuralNetwork" aria-pressed="true">Neural Net</button>
         <button type="button" class="toggle" data-ai-toggle="nnLogs" aria-pressed="true">NN Logs</button>
-        <button type="button" class="toggle" data-ai-toggle="autoPacman" aria-pressed="false">Auto Pac-Man</button>
-        <button type="button" class="toggle" data-ai-toggle="pacmanNn" aria-pressed="true">Pac-Man NN</button>
-        <button type="button" class="toggle" data-ai-toggle="pacmanPretrain" aria-pressed="true">Warm Start</button>
-        <button type="button" class="toggle" data-ai-toggle="pacmanLogs" aria-pressed="true">Pac-Man Logs</button>
+        <button type="button" class="toggle" data-ai-toggle="autoPlayer" aria-pressed="false">Auto Player</button>
+        <button type="button" class="toggle" data-ai-toggle="playerNn" aria-pressed="true">Player NN</button>
+        <button type="button" class="toggle" data-ai-toggle="playerPretrain" aria-pressed="true">Warm Start</button>
+        <button type="button" class="toggle" data-ai-toggle="playerLogs" aria-pressed="true">Player Logs</button>
         <button type="button" class="toggle" data-ai-toggle="persistentMemory" aria-pressed="true">Persistent Memory</button>
         <button type="button" class="toggle" data-ai-toggle="adaptiveDifficulty" aria-pressed="true">Adaptive Pressure</button>
         <button type="button" class="toggle" data-ai-toggle="groupTactics" aria-pressed="true">Group Tactics</button>
@@ -52,10 +52,10 @@
         <div>Memory <strong id="ai-memory">0</strong></div>
         <div>NN Samples <strong id="ai-nn-samples">0</strong></div>
         <div>NN Loss <strong id="ai-nn-loss">-</strong></div>
-        <div>Pac Samples <strong id="pac-nn-samples">0</strong></div>
-        <div>Pac Online <strong id="pac-nn-online">0</strong></div>
-        <div>Pac Reward <strong id="pac-nn-reward">-</strong></div>
-        <div>Pretrain <strong id="pac-nn-pretrain">0</strong></div>
+        <div>Player Samples <strong id="player-nn-samples">0</strong></div>
+        <div>Player Online <strong id="player-nn-online">0</strong></div>
+        <div>Player Reward <strong id="player-nn-reward">-</strong></div>
+        <div>Pretrain <strong id="player-nn-pretrain">0</strong></div>
       </div>
     </section>
 
@@ -67,6 +67,6 @@
     </p>
   </main>
 
-  <script src="game.js?v=10"></script>
+  <script src="game.js?v=11"></script>
 </body>
 </html>
